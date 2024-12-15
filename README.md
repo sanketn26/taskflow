@@ -1,2 +1,2 @@
 # taskflow
-A lightweight opinionated distributed task processing framework for python
+A lightweight opinionated [distributed] task processing framework for python
