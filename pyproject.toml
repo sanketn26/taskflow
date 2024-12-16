@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "taskflow"
+version = "0.0.1"
+requires-python = ">=3.11"
+authors = [{ name = "Sanket Naik", email = "sanketn@gmail.com" }]
+maintainers = [{ name = "Sanket Naik", email = "sanketn@gmail.com" }]
+description = "A lightweight opinionated [distributed] task processing framework for python"
+readme = "README.md"
+license = { file = "LICENSE" }
+keywords = ["tasks", "asynchronous", "distributed", "python", "flow control"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+]
+
+[project.optional-dependencies]
+
+[project.urls]
+homepage = "https://taskflow.io"
+documentation = "https://readthedocs.org"
+repository = "https://github.com/sanketn26/taskflow.git"
+bug-tracker = "https://github.com/sanketn26/taskflow/issues"
+changelog = "https://github.com/sanketn26/taskflow/blob/main/CHANGELOG.md"
