@@ -1,25 +1,51 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
 
-[project]
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
 name = "taskflow"
 version = "0.0.1"
-requires-python = ">=3.11"
-authors = [{ name = "Sanket Naik", email = "sanketn@gmail.com" }]
-maintainers = [{ name = "Sanket Naik", email = "sanketn@gmail.com" }]
 description = "A lightweight opinionated [distributed] task processing framework for python"
+authors = ["Sanket Naik <sanketn@gmail.com>"]
+maintainers = ["Sanket Naik <sanketn@gmail.com>"]
+license = "MIT"
 readme = "README.md"
-license = { file = "LICENSE" }
+homepage = "https://taskflow.io"
+repository = "https://github.com/sanketn26/taskflow.git"
+documentation = "https://readthedocs.org"
 keywords = ["tasks", "asynchronous", "distributed", "python", "flow control"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python",
 ]
 
-[project.optional-dependencies]
+[tool.poetry.dependencies]
+python = ">=3.10"
+typing_extensions = "^4.13.2"
+gevent = { version = "^25.5.1", optional = true }
+greenlet = { version = "^3.2.2", optional = true }
+zope-event = { version = "^5.0", optional = true }
+zope-interface = { version = "^7.2", optional = true }
 
-[project.urls]
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.5"
+pytest-cov = "*"
+tomli = "^2.2.1"
+packaging = "^25.0"
+pluggy = "^1.6.0"
+iniconfig = "^2.1.0"
+exceptiongroup = "^1.3.0"
+flake8 = "^7.2.0"
+black = "^25.1.0"
+isort = "^6.0.1"
+
+[tool.poetry.extras]
+gevent = ["gevent", "greenlet", "zope-event", "zope-interface"]
+testing = ["pytest", "pytest-cov"]
+all = ["gevent", "greenlet", "zope-event", "zope-interface", "pytest", "pytest-cov"]
+
+[tool.poetry.urls]
 homepage = "https://taskflow.io"
 documentation = "https://readthedocs.org"
 repository = "https://github.com/sanketn26/taskflow.git"

@@ -1,82 +1,110 @@
-# Makefile for python code
+# Makefile for taskflow using Poetry
 # 
 # > make help
 #
-# The following commands can be used.
-#
-# init:  sets up environment and installs requirements
-# install:  Installs development requirments
-# lint:  Runs flake8 on src, exit if critical rules are broken
-# clean:  Remove build and cache files
-# env:  Source venv and environment files for testing
-# leave:  Cleanup and deactivate venv
-# test:  Run pytest
+# For detailed information about each command, run 'make help'
 
-VENV_PATH='venv/bin/activate'
-ENVIRONMENT_VARIABLE_FILE='.env'
+.PHONY: help setup install clean venv test coverage test-one lint lint-fix isort
 
 define find.functions
 	@fgrep -h "##" $(MAKEFILE_LIST) | fgrep -v fgrep | sed -e 's/\\$$//' | sed -e 's/##//'
 endef
 
 help:
-	@echo 'The following commands can be used.'
+	@echo 'The following commands can be used:'
 	@echo ''
 	$(call find.functions)
 
+# Check if Poetry is installed and set POETRY_CMD
+poetry-check:
+	@if command -v poetry >/dev/null 2>&1; then \
+		echo "Using system Poetry"; \
+		POETRY_CMD="poetry"; \
+	elif [ -f "$$HOME/.local/bin/poetry" ]; then \
+		echo "Using Poetry from ~/.local/bin"; \
+		POETRY_CMD="$$HOME/.local/bin/poetry"; \
+	else \
+		echo "Poetry is not installed. Installing poetry..."; \
+		curl -sSL https://install.python-poetry.org | python3 -; \
+		POETRY_CMD="$$HOME/.local/bin/poetry"; \
+	fi; \
+	export POETRY_CMD;
 
-init: ## sets up environment and installs requirements
-init:
-	pip install -r requirements.txt
+setup: ## Setup poetry and install all dependencies including development
+setup: poetry-check
+	$(HOME)/.local/bin/poetry install --all-extras --with dev
 
-install: ## Installs development requirments
-install:
-	python -m pip install --upgrade pip
-	# Used for packaging and publishing
-	pip install setuptools wheel twine
-	# Used for linting
-	pip install flake8
-	# Used for testing
-	pip install pytest
+install: ## Install only production dependencies
+install: poetry-check
+	$(HOME)/.local/bin/poetry install --only main
 
-lint: ## Runs flake8 on src, exit if critical rules are broken
-lint:
-	# stop the build if there are Python syntax errors or undefined names
-	flake8 src --count --select=E9,F63,F7,F82 --show-source --statistics
-	# exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
-	flake8 src --count --exit-zero --statistics
+dev-deps: ## Install development dependencies
+dev-deps: poetry-check
+	$(HOME)/.local/bin/poetry install --only dev
 
-package: ## Create package in dist
-package: clean
-	python3 setup/setup.py sdist bdist_wheel
+venv: ## Create and configure Poetry virtual environment
+venv: poetry-check
+	$(HOME)/.local/bin/poetry env use python3
+	@echo "To activate: $(HOME)/.local/bin/poetry shell"
 
-upload-test: ## Create package and upload to test.pypi
-upload-test: package
-	python3 -m twine upload --repository-url https://test.pypi.org/legacy/ dist/* --non-interactive --verbose
-
-upload: ## Create package and upload to pypi
-upload: package
-	python3 -m twine upload dist/* --non-interactive
-
-clean: ## Remove build and cache files
+clean: ## Remove all build and cache files
 clean:
-	rm -rf *.egg-info
-	rm -rf build
 	rm -rf dist
 	rm -rf .pytest_cache
-	# Remove all pycache
-	find . | grep -E "(__pycache__|\.pyc|\.pyo$)" | xargs rm -rf
+	rm -rf .coverage
+	rm -rf htmlcov
+	find . -type d -name __pycache__ -exec rm -rf {} +
+	find . -type f -name "*.pyc" -delete
+	find . -type f -name "*.pyo" -delete
+	find . -type f -name "*.pyd" -delete
+	find . -type f -name ".DS_Store" -delete
+	find . -type d -name "*.egg-info" -exec rm -rf {} +
+	find . -type d -name "*.egg" -exec rm -rf {} +
+	find . -type d -name ".pytest_cache" -exec rm -rf {} +
+	find . -type d -name ".coverage" -exec rm -rf {} +
+	find . -type d -name "htmlcov" -exec rm -rf {} +
+	find . -type d -name ".benchmarks" -exec rm -rf {} +
 
-env: ## Source venv and environment files for testing
-env:
-	python3 -m venv venv
-	source $(VENV_PATH)
-	source $(ENVIRONMENT_VARIABLE_FILE)
+clean-venv: ## Remove Poetry virtual environment
+clean-venv:
+	$(HOME)/.local/bin/poetry env remove --all
 
-leave: ## Cleanup and deactivate venv
-leave: clean
-	deactivate
+lint: ## Run linting checks with flake8
+lint: poetry-check
+	$(HOME)/.local/bin/poetry run flake8 src tests
 
-test: ## Run pytest
-test:
-	pytest . -p no:logging -p no:warnings
+lint-fix: ## Fix linting issues automatically where possible with black
+lint-fix: poetry-check
+	$(HOME)/.local/bin/poetry run black src tests
+
+isort: ## Sort imports with isort
+isort: poetry-check
+	$(HOME)/.local/bin/poetry run isort src tests
+
+package: ## Create distribution package
+package: clean
+	$(HOME)/.local/bin/poetry build
+
+upload-test: ## Upload package to TestPyPI
+upload-test: package
+	$(HOME)/.local/bin/poetry publish --repository testpypi
+
+upload: ## Upload package to PyPI
+upload: package
+	$(HOME)/.local/bin/poetry publish
+
+test: ## Run all tests
+test: poetry-check
+	$(HOME)/.local/bin/poetry run pytest tests/
+
+test-one: ## Run a specific test file, e.g., make test-one file=tests/test_file.py
+test-one: poetry-check
+	$(HOME)/.local/bin/poetry run pytest $(file) -v
+
+coverage: ## Run tests with coverage
+coverage: poetry-check
+	$(HOME)/.local/bin/poetry run pytest --cov=src --cov-report=html --cov-report=term tests/
+
+install-lint-deps: ## Install linting dependencies
+install-lint-deps: poetry-check
+	$(HOME)/.local/bin/poetry add --group dev flake8 black isort

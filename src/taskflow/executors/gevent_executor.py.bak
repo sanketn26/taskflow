@@ -1,0 +1,107 @@
+from typing import Callable, Any, Iterable, Iterator, Optional, TypeVar, List, cast, Union
+from typing_extensions import Protocol
+from .base import BaseExecutor
+
+T = TypeVar('T')
+
+# Define a protocol for what we expect from a Greenlet
+class GreenletProtocol(Protocol):
+    def get(self, timeout=None, block=True):
+        ...
+    
+    def join(self, timeout=None):
+        ...
+    
+    def kill(self, exception=None, block=True, timeout=None):
+        ...
+
+# Use Any instead of a forward reference to gevent.Greenlet
+class GeventExecutor(BaseExecutor[Any]):
+    """Greenlet-based executor implementation using gevent.
+    
+    This executor is suitable for I/O-bound tasks that benefit from
+    cooperative multitasking provided by greenlets.
+    """
+    
+    def __init__(self, max_workers: Optional[int] = None):
+        """Initialize a new GeventExecutor.
+        
+        Args:
+            max_workers: The maximum number of concurrent greenlets. 
+                        If None, no limit is applied.
+        """
+        try:
+            import gevent.pool
+            import gevent.monkey
+        except ImportError:
+            raise ImportError(
+                "gevent is required for GeventExecutor. "
+                "Install it with 'pip install gevent'."
+            )
+        
+        self._pool = gevent.pool.Pool(max_workers)
+        self.gevent = gevent
+
+    def submit(self, fn: Callable, *args, **kwargs) -> 'gevent.Greenlet':
+        """Submit a callable for execution.
+        
+        Args:
+            fn: The callable to execute
+            *args: Arguments to pass to the callable
+            **kwargs: Keyword arguments to pass to the callable
+            
+        Returns:
+            A Greenlet representing the execution
+        """
+        greenlet = self._pool.spawn(fn, *args, **kwargs)
+        
+        # Add result() method for compatibility with concurrent.futures.Future
+        if not hasattr(greenlet, 'result'):
+            def result(timeout=None):
+                return greenlet.get(timeout=timeout)
+            
+            greenlet.result = result
+        
+        return greenlet
+
+    def map(self, fn: Callable[[Any], T], *iterables, 
+            timeout: Optional[float] = None, chunksize: int = 1) -> Iterator[T]:
+        """Map a function over iterables.
+        
+        Args:
+            fn: The callable to execute on each element
+            *iterables: The iterables to map over
+            timeout: Maximum time to wait for each result
+            chunksize: Size of chunks for processing (ignored in this implementation)
+            
+        Returns:
+            An iterator over the results
+        """
+        # Gevent's pool.imap is similar to map, but doesn't use chunksize
+        return self._pool.imap(fn, *iterables, timeout=timeout)
+
+    def shutdown(self, wait: bool = True) -> None:
+        """Clean up resources by shutting down the executor.
+        
+        Args:
+            wait: If True, wait for all pending tasks to complete
+                 before killing the pool. If False, kill immediately.
+        """
+        if wait:
+            self._pool.join(timeout=None)
+        self._pool.kill()
+        
+    def __enter__(self):
+        # Ensure gevent monkey patching is applied
+        try:
+            from gevent import monkey
+            if not monkey.is_module_patched('socket'):
+                import warnings
+                warnings.warn(
+                    "Using GeventExecutor without monkey patching. "
+                    "Call gevent.monkey.patch_all() at the start of your program "
+                    "for best performance."
+                )
+        except ImportError:
+            pass
+        return self
