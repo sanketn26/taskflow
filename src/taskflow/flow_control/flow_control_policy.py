@@ -82,33 +82,15 @@ class CompositeFlowControlPolicy(FlowControlPolicy):
 
         :yield: Boolean indicating if task can proceed
         """
-        # Track which policies were successfully acquired
-        acquired_policies = []
-
+        # For composite policies, we use the base implementation
+        # which calls should_execute()
         try:
-            # Attempt to acquire all policies based on combination type
-            for policy in self._policies:
-                with policy.acquire() as allowed:
-                    if (self._combination_type == "and" and not allowed) or (
-                        self._combination_type == "or" and allowed
-                    ):
-                        acquired_policies.append(policy)
-                        if self._combination_type == "or":
-                            break
-
-            # Determine if execution is allowed
-            if (
-                self._combination_type == "and"
-                and len(acquired_policies) == len(self._policies)
-            ) or (self._combination_type == "or" and acquired_policies):
+            if self.should_execute():
                 yield True
             else:
                 yield False
-
         finally:
-            # Ensure all acquired policies are released
-            for policy in acquired_policies:
-                policy.release()
+            self.release()
 
 
 class ConcurrencyLimitPolicy(FlowControlPolicy):
@@ -142,23 +124,23 @@ class ConcurrencyLimitPolicy(FlowControlPolicy):
 
         :yield: Boolean indicating if task can proceed
         """
+        acquired = False
         try:
-            allowed = self.should_execute()
-            if allowed:
+            acquired = self.should_execute()
+            if acquired:
                 with self._lock:
                     self._active_tasks += 1
-                yield allowed
-            else:
-                yield allowed
+            yield acquired
         finally:
-            self.release()
+            if acquired:
+                self.release()
 
     def release(self):
         """
         Release the concurrency slot.
         """
-        if hasattr(self, "_current_tasks"):
-            with self._lock:
+        with self._lock:
+            if self._active_tasks > 0:
                 self._active_tasks -= 1
                 self._current_tasks.release()
 
@@ -246,25 +228,15 @@ class RetryPolicy(FlowControlPolicy):
         Context manager for retry logic
 
         :yield: Boolean indicating if task can proceed
-        :raises: Original exception if max attempts reached
         """
-        last_exception = None
-
-        while self.should_execute():
-            try:
+        try:
+            if self.should_execute():
                 self._current_attempt += 1
                 yield True
-                # If no exception, break the retry loop
-                break
-            except self._retriable_exceptions as e:
-                last_exception = e
-
-                # If this is the last attempt, re-raise the exception
-                if not self.should_execute():
-                    raise
-
-        # If we exit the loop without an exception, reset attempt count
-        self._current_attempt = 0
+            else:
+                yield False
+        finally:
+            pass  # Attempt count is managed by should_execute calls
 
     def release(self):
         """
@@ -306,41 +278,12 @@ class ExponentialBackoffRetryPolicy(RetryPolicy):
         Context manager with exponential backoff retry logic
 
         :yield: Boolean indicating if task can proceed
-        :raises: Original exception if max attempts reached
         """
-        last_exception = None
-
-        while self.should_execute():
-            try:
-                # Calculate delay with exponential backoff
-                delay = min(
-                    self._base_delay * (2 ** (self._current_attempt - 1)),
-                    self._max_delay,
-                )
-
-                # Add jitter if enabled
-                if self._jitter and self._current_attempt > 1:
-                    jitter_amount = delay * 0.1  # 10% jitter
-                    delay += random.uniform(-jitter_amount, jitter_amount)
-
-                # Increment attempt counter
+        try:
+            if self.should_execute():
                 self._current_attempt += 1
-
-                # Yield true to execute the task
                 yield True
-
-                # If no exception, break the retry loop
-                break
-
-            except self._retriable_exceptions as e:
-                last_exception = e
-
-                # If this is the last attempt, re-raise the exception
-                if not self.should_execute():
-                    raise
-
-                # Wait before next retry
-                time.sleep(delay)
-
-        # Reset attempt count
-        self._current_attempt = 0
+            else:
+                yield False
+        finally:
+            pass  # Attempt count is managed by should_execute calls

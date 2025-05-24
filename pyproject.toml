@@ -25,6 +25,7 @@ gevent = { version = "^25.5.1", optional = true }
 greenlet = { version = "^3.2.2", optional = true }
 zope-event = { version = "^5.0", optional = true }
 zope-interface = { version = "^7.2", optional = true }
+psutil = { version = "^5.9.0", optional = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.5"
@@ -35,8 +36,9 @@ isort = "^6.0.1"
 
 [tool.poetry.extras]
 gevent = ["gevent", "greenlet", "zope-event", "zope-interface"]
+monitoring = ["psutil"]
 testing = ["pytest", "pytest-cov"]
-all = ["gevent", "greenlet", "zope-event", "zope-interface", "pytest", "pytest-cov"]
+all = ["gevent", "greenlet", "zope-event", "zope-interface", "psutil", "pytest", "pytest-cov"]
 
 [tool.poetry.urls]
 homepage = "https://taskflow.io"
