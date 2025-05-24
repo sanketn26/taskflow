@@ -1,9 +1,9 @@
 import abc
-import threading
-import time
 import contextlib
 import random
-from typing import List, Generator, Optional, Union
+import threading
+import time
+from typing import Generator, List, Optional, Union
 
 
 class FlowControlPolicy(abc.ABC):

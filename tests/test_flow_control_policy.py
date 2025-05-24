@@ -2,12 +2,12 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from src.taskflow.flow_control.flow_control_policy import (
-    FlowControlPolicy,
     CompositeFlowControlPolicy,
     ConcurrencyLimitPolicy,
+    ExponentialBackoffRetryPolicy,
+    FlowControlPolicy,
     RateLimitPolicy,
     RetryPolicy,
-    ExponentialBackoffRetryPolicy,
 )
 
 

@@ -1,110 +1,80 @@
-# Makefile for taskflow using Poetry
-# 
-# > make help
-#
-# For detailed information about each command, run 'make help'
+# Makefile for local virtual environment with Poetry
+.PHONY: help setup cleanup test run lint lint-fx package update refresh install venv
 
-.PHONY: help setup install clean venv test coverage test-one lint lint-fix isort
+# Project-local virtual environment
+VENV_DIR := .venv
+VENV_BIN := $(VENV_DIR)/bin
+PYTHON := $(VENV_BIN)/python
+PIP := $(VENV_BIN)/pip
+POETRY := $(VENV_BIN)/poetry
+ACTIVATE := source $(VENV_BIN)/activate
 
-define find.functions
-	@fgrep -h "##" $(MAKEFILE_LIST) | fgrep -v fgrep | sed -e 's/\\$$//' | sed -e 's/##//'
-endef
+# Check if virtual environment exists
+VENV_EXISTS := $(shell [ -d $(VENV_DIR) ] && echo "true" || echo "false")
 
 help:
-	@echo 'The following commands can be used:'
-	@echo ''
-	$(call find.functions)
+	@echo "Available targets:"
+	@echo "  setup     - Create local venv, install Poetry, and install all dependencies"
+	@echo "  cleanup   - Remove local venv and all build/test artifacts"
+	@echo "  test      - Run all unit tests"
+	@echo "  run       - Run the library (src/taskflow) as a module"
+	@echo "  lint      - Run flake8 lint checks"
+	@echo "  lint-fx   - Run isort and black to fix lint issues"
+	@echo "  package   - Build the python package"
+	@echo "  update    - Run 'poetry lock' to sync lock file"
+	@echo "  refresh   - Run 'poetry lock' to regenerate lock file with latest versions"
+	@echo "  install   - Run 'poetry install' to install dependencies"
+	@echo "  venv      - Create local virtual environment only"
+	@echo "  help      - Show this help message"
 
-# Check if Poetry is installed and set POETRY_CMD
-poetry-check:
-	@if command -v poetry >/dev/null 2>&1; then \
-		echo "Using system Poetry"; \
-		POETRY_CMD="poetry"; \
-	elif [ -f "$$HOME/.local/bin/poetry" ]; then \
-		echo "Using Poetry from ~/.local/bin"; \
-		POETRY_CMD="$$HOME/.local/bin/poetry"; \
-	else \
-		echo "Poetry is not installed. Installing poetry..."; \
-		curl -sSL https://install.python-poetry.org | python3 -; \
-		POETRY_CMD="$$HOME/.local/bin/poetry"; \
-	fi; \
-	export POETRY_CMD;
+venv:
+	@echo "Creating local virtual environment..."
+	python3 -m venv $(VENV_DIR)
+	@echo "Virtual environment created at $(VENV_DIR)"
 
-setup: ## Setup poetry and install all dependencies including development
-setup: poetry-check
-	$(HOME)/.local/bin/poetry install --all-extras --with dev
+setup: venv
+	@echo "Installing Poetry in local virtual environment..."
+	$(PIP) install --upgrade pip
+	$(PIP) install poetry
+	@echo "Installing project dependencies..."
+	$(POETRY) install --all-extras --with dev
+	@echo "Setup complete! Virtual environment is ready at $(VENV_DIR)"
 
-install: ## Install only production dependencies
-install: poetry-check
-	$(HOME)/.local/bin/poetry install --only main
-
-dev-deps: ## Install development dependencies
-dev-deps: poetry-check
-	$(HOME)/.local/bin/poetry install --only dev
-
-venv: ## Create and configure Poetry virtual environment
-venv: poetry-check
-	$(HOME)/.local/bin/poetry env use python3
-	@echo "To activate: $(HOME)/.local/bin/poetry shell"
-
-clean: ## Remove all build and cache files
-clean:
-	rm -rf dist
-	rm -rf .pytest_cache
-	rm -rf .coverage
-	rm -rf htmlcov
+cleanup:
+	@echo "Removing local virtual environment and artifacts..."
+	rm -rf $(VENV_DIR)
 	find . -type d -name __pycache__ -exec rm -rf {} +
-	find . -type f -name "*.pyc" -delete
-	find . -type f -name "*.pyo" -delete
-	find . -type f -name "*.pyd" -delete
-	find . -type f -name ".DS_Store" -delete
-	find . -type d -name "*.egg-info" -exec rm -rf {} +
-	find . -type d -name "*.egg" -exec rm -rf {} +
-	find . -type d -name ".pytest_cache" -exec rm -rf {} +
-	find . -type d -name ".coverage" -exec rm -rf {} +
-	find . -type d -name "htmlcov" -exec rm -rf {} +
-	find . -type d -name ".benchmarks" -exec rm -rf {} +
+	rm -rf dist .pytest_cache .coverage htmlcov
+	find . -type f -name '*.pyc' -delete
+	find . -type f -name '*.pyo' -delete
+	find . -type f -name '*.pyd' -delete
+	find . -type f -name '.DS_Store' -delete
+	find . -type d -name '*.egg-info' -exec rm -rf {} +
+	find . -type d -name '*.egg' -exec rm -rf {} +
+	find . -type d -name '.benchmarks' -exec rm -rf {} +
+	@echo "Cleanup complete!"
 
-clean-venv: ## Remove Poetry virtual environment
-clean-venv:
-	$(HOME)/.local/bin/poetry env remove --all
+test:
+	$(POETRY) run pytest tests/
 
-lint: ## Run linting checks with flake8
-lint: poetry-check
-	$(HOME)/.local/bin/poetry run flake8 src tests
+run:
+	$(POETRY) run python -m src.taskflow
 
-lint-fix: ## Fix linting issues automatically where possible with black
-lint-fix: poetry-check
-	$(HOME)/.local/bin/poetry run black src tests
+lint:
+	$(POETRY) run flake8 src tests
 
-isort: ## Sort imports with isort
-isort: poetry-check
-	$(HOME)/.local/bin/poetry run isort src tests
+lint-fx:
+	$(POETRY) run isort src tests
+	$(POETRY) run black src tests
 
-package: ## Create distribution package
-package: clean
-	$(HOME)/.local/bin/poetry build
+package:
+	$(POETRY) build
 
-upload-test: ## Upload package to TestPyPI
-upload-test: package
-	$(HOME)/.local/bin/poetry publish --repository testpypi
+update:
+	$(POETRY) lock
 
-upload: ## Upload package to PyPI
-upload: package
-	$(HOME)/.local/bin/poetry publish
+refresh:
+	$(POETRY) lock --regenerate
 
-test: ## Run all tests
-test: poetry-check
-	$(HOME)/.local/bin/poetry run pytest tests/
-
-test-one: ## Run a specific test file, e.g., make test-one file=tests/test_file.py
-test-one: poetry-check
-	$(HOME)/.local/bin/poetry run pytest $(file) -v
-
-coverage: ## Run tests with coverage
-coverage: poetry-check
-	$(HOME)/.local/bin/poetry run pytest --cov=src --cov-report=html --cov-report=term tests/
-
-install-lint-deps: ## Install linting dependencies
-install-lint-deps: poetry-check
-	$(HOME)/.local/bin/poetry add --group dev flake8 black isort
+install:
+	$(POETRY) install
