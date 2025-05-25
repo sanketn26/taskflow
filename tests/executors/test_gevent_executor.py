@@ -1,16 +1,20 @@
+## gevent monkey patching removed as per new requirements
 import importlib.util
 import time
 import unittest
 import warnings
 
+
 # Skip tests if gevent is not installed
 gevent_available = importlib.util.find_spec("gevent") is not None
 if gevent_available:
     import gevent
-
     from taskflow.executors import get_executor
     from taskflow.executors.gevent_executor import GeventExecutor
 else:
+    gevent = None
+    get_executor = None
+    GeventExecutor = None
     warnings.warn("Gevent not installed, skipping gevent executor tests")
 
 
@@ -21,8 +25,7 @@ def simple_task(value):
 
 def sleeping_task(seconds, value):
     """Task that sleeps for a specified amount of time, then returns value."""
-    # Use gevent-compatible sleep if available
-    if "gevent" in globals():
+    if gevent_available and gevent is not None:
         gevent.sleep(seconds)
     else:
         time.sleep(seconds)
@@ -31,7 +34,7 @@ def sleeping_task(seconds, value):
 
 def io_simulation_task(delay, value):
     """Simulate an IO task by sleeping."""
-    if "gevent" in globals():
+    if gevent_available and gevent is not None:
         gevent.sleep(delay)
     else:
         time.sleep(delay)

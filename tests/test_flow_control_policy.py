@@ -43,10 +43,10 @@ class TestFlowControlPolicy(unittest.TestCase):
 
     def test_concurrency_limit_policy(self):
         policy = ConcurrencyLimitPolicy(max_concurrent_tasks=1)
-        with policy.acquire() as allowed:
-            self.assertTrue(allowed)
-        with policy.acquire() as allowed:
-            self.assertFalse(allowed)
+        with policy.acquire() as allowed1:
+            self.assertTrue(allowed1)
+            with policy.acquire() as allowed2:
+                self.assertFalse(allowed2)
 
     def test_rate_limit_policy(self):
         policy = RateLimitPolicy(max_tasks=1, time_window=1)

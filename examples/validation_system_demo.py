@@ -22,7 +22,7 @@ from taskflow.task import CallableTask, TaskState
 from taskflow.context import TaskContext
 from taskflow.task_group import TaskGroup
 from taskflow.validation import ValidationPolicy, ResourceValidator, DependencyValidator, ValidationSeverity
-from taskflow.executors.thread_executor import ThreadExecutor
+from taskflow.executors import get_executor
 from taskflow.executors.validating_executor import ValidatingTaskExecutor, ComprehensiveTaskExecutor
 from taskflow.exceptions import PreExecutionValidationError
 
@@ -261,14 +261,12 @@ def demo_circular_dependency():
     except Exception as e:
         print(f"Expected circular dependency error: {e}")
 
-def demo_comprehensive_executor():
+def demo_comprehensive_executor(executor_kind="thread", max_workers=2, max_processes=None):
     """Demonstrate the comprehensive executor with full validation."""
-    print("\n=== Comprehensive Executor Demo ===")
-    
-    # Create executor with comprehensive validation
-    base_executor = ThreadExecutor(max_workers=2)
+    print(f"\n=== Comprehensive Executor Demo ({executor_kind}) ===")
+    base_executor = get_executor(executor_kind, max_workers=max_workers, max_processes=max_processes)
     executor = ComprehensiveTaskExecutor(base_executor)
-    
+
     # Execute valid task
     print("Executing valid task...")
     valid_task = CallableTask(
@@ -277,10 +275,9 @@ def demo_comprehensive_executor():
         context=TaskContext.with_timeout(10.0),
         estimated_duration=2.0
     )
-    
     result_task = executor.execute_task_with_policy(valid_task)
     print(f"Result: {result_task.state}, value: {result_task.result}")
-    
+
     # Try to execute invalid task
     print("\nExecuting invalid task...")
     invalid_task = CallableTask(
@@ -288,23 +285,32 @@ def demo_comprehensive_executor():
         task_id="x",  # Too short
         context=TaskContext.with_timeout(10.0)
     )
-    
     result_task = executor.execute_task_with_policy(invalid_task)
     print(f"Result: {result_task.state}")
     if result_task.exception:
         print(f"Exception: {result_task.exception}")
-    
+
     # Get validation statistics
     stats = executor.get_validation_stats()
     print(f"\nValidation statistics: {stats}")
-    
     executor.shutdown()
 
+import argparse
 def main():
     """Run all validation system demonstrations."""
+    parser = argparse.ArgumentParser(description="Taskflow Validation System Demonstration")
+    parser.add_argument(
+        "--executor", type=str, default="thread",
+        choices=["thread", "thread+process", "greenlet", "greenlet+process"],
+        help="Execution mode for the comprehensive demo"
+    )
+    parser.add_argument("--max-workers", type=int, default=2, help="Max workers (threads/greenlets)")
+    parser.add_argument("--max-processes", type=int, default=None, help="Max processes (for process/hybrid modes)")
+    args = parser.parse_args()
+
     print("Taskflow Validation System Demonstration")
     print("=" * 50)
-    
+
     try:
         demo_basic_validation()
         demo_timeout_validation()
@@ -313,11 +319,15 @@ def main():
         demo_task_group_validation()
         demo_dependency_validation()
         demo_circular_dependency()
-        demo_comprehensive_executor()
-        
+        demo_comprehensive_executor(
+            executor_kind=args.executor,
+            max_workers=args.max_workers,
+            max_processes=args.max_processes
+        )
+
         print("\n" + "=" * 50)
         print("All validation system demonstrations completed!")
-        
+
     except Exception as e:
         logger.error(f"Demo failed: {e}")
         import traceback
