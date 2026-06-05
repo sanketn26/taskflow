@@ -4,45 +4,38 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "taskflow"
-version = "0.0.1"
-description = "A lightweight opinionated [distributed] task processing framework for python"
+version = "0.1.0"
+description = "High-performance distributed task execution — pythonic tasks, Go-powered runtime, no broker required"
 authors = ["Sanket Naik <sanketn@gmail.com>"]
 license = "MIT"
 readme = "README.md"
 homepage = "https://taskflow.io"
 repository = "https://github.com/sanketn26/taskflow.git"
 documentation = "https://readthedocs.org"
-keywords = ["tasks", "asynchronous", "distributed", "python", "flow control"]
+keywords = ["tasks", "distributed", "parallel", "worker", "queue", "async"]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 2 - Pre-Alpha",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
 ]
+packages = [{include = "taskflow", from = "python"}]
 
 [tool.poetry.dependencies]
-python = ">=3.10"
-typing_extensions = "^4.13.2"
-gevent = { version = "^25.5.1", optional = true }
-greenlet = { version = "^3.2.2", optional = true }
-zope-event = { version = "^5.0", optional = true }
-zope-interface = { version = "^7.2", optional = true }
-psutil = { version = "^5.9.0", optional = true }
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.3.5"
-pytest-cov = "*"
-flake8 = "^7.2.0"
-black = "^25.1.0"
-isort = "^6.0.1"
+python = ">=3.13"
+cloudpickle = "^3.0"
+pyyaml = "^6.0"
+msgpack = "^1.0"
 
 [tool.poetry.extras]
-gevent = ["gevent", "greenlet", "zope-event", "zope-interface"]
-monitoring = ["psutil"]
-testing = ["pytest", "pytest-cov"]
-all = ["gevent", "greenlet", "zope-event", "zope-interface", "psutil", "pytest", "pytest-cov"]
+kafka = ["kafka-python"]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+pytest-cov = "*"
+ruff = "^0.4"
 
 [tool.poetry.urls]
 homepage = "https://taskflow.io"
-documentation = "https://readthedocs.org"
 repository = "https://github.com/sanketn26/taskflow.git"
 bug-tracker = "https://github.com/sanketn26/taskflow/issues"
 changelog = "https://github.com/sanketn26/taskflow/blob/main/CHANGELOG.md"

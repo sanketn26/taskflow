@@ -1,80 +1,73 @@
-# Makefile for local virtual environment with Poetry
-.PHONY: help setup cleanup test run lint lint-fx package update refresh install venv
+.PHONY: all build-agent build-sdk test test-unit test-integration bench clean fmt lint help
 
-# Project-local virtual environment
-VENV_DIR := .venv
-VENV_BIN := $(VENV_DIR)/bin
-PYTHON := $(VENV_BIN)/python
-PIP := $(VENV_BIN)/pip
-POETRY := $(VENV_BIN)/poetry
-ACTIVATE := source $(VENV_BIN)/activate
-
-# Check if virtual environment exists
-VENV_EXISTS := $(shell [ -d $(VENV_DIR) ] && echo "true" || echo "false")
+all: build-agent build-sdk
 
 help:
-	@echo "Available targets:"
-	@echo "  setup     - Create local venv, install Poetry, and install all dependencies"
-	@echo "  cleanup   - Remove local venv and all build/test artifacts"
-	@echo "  test      - Run all unit tests"
-	@echo "  run       - Run the library (src/taskflow) as a module"
-	@echo "  lint      - Run flake8 lint checks"
-	@echo "  lint-fx   - Run isort and black to fix lint issues"
-	@echo "  package   - Build the python package"
-	@echo "  update    - Run 'poetry lock' to sync lock file"
-	@echo "  refresh   - Run 'poetry lock' to regenerate lock file with latest versions"
-	@echo "  install   - Run 'poetry install' to install dependencies"
-	@echo "  venv      - Create local virtual environment only"
-	@echo "  help      - Show this help message"
+	@echo "Targets:"
+	@echo "  build-agent       Build the Go sidecar binary"
+	@echo "  build-sdk         Install the Python SDK in editable mode"
+	@echo "  test              Run all tests (agent + SDK unit)"
+	@echo "  test-unit         Run Python unit tests only (no sidecar needed)"
+	@echo "  test-integration  Run integration tests (requires running agent)"
+	@echo "  bench             Run benchmarks"
+	@echo "  fmt               Format all code (Go + Python)"
+	@echo "  lint              Lint all code (Go + Python)"
+	@echo "  clean             Remove build artifacts"
+	@echo "  agent-run         Run the agent with example config"
 
-venv:
-	@echo "Creating local virtual environment..."
-	python3 -m venv $(VENV_DIR)
-	@echo "Virtual environment created at $(VENV_DIR)"
+# --- Agent (Go) ---
 
-setup: venv
-	@echo "Installing Poetry in local virtual environment..."
-	$(PIP) install --upgrade pip
-	$(PIP) install poetry
-	@echo "Installing project dependencies..."
-	$(POETRY) install --all-extras --with dev
-	@echo "Setup complete! Virtual environment is ready at $(VENV_DIR)"
+build-agent:
+	mkdir -p agent/bin
+	cd agent && go build \
+		-ldflags "-X main.version=$(shell git describe --tags --always 2>/dev/null || echo dev)" \
+		-o bin/taskflow-agent ./cmd/taskflow-agent
 
-cleanup:
-	@echo "Removing local virtual environment and artifacts..."
-	rm -rf $(VENV_DIR)
-	find . -type d -name __pycache__ -exec rm -rf {} +
-	rm -rf dist .pytest_cache .coverage htmlcov
-	find . -type f -name '*.pyc' -delete
-	find . -type f -name '*.pyo' -delete
-	find . -type f -name '*.pyd' -delete
-	find . -type f -name '.DS_Store' -delete
-	find . -type d -name '*.egg-info' -exec rm -rf {} +
-	find . -type d -name '*.egg' -exec rm -rf {} +
-	find . -type d -name '.benchmarks' -exec rm -rf {} +
-	@echo "Cleanup complete!"
+test-agent:
+	cd agent && go test ./...
 
-test:
-	$(POETRY) run pytest tests/
+fmt-agent:
+	cd agent && gofmt -w .
 
-run:
-	$(POETRY) run python -m src.taskflow
+lint-agent:
+	cd agent && go vet ./...
 
-lint:
-	$(POETRY) run flake8 src tests
+# --- SDK (Python 3.13+) ---
 
-lint-fx:
-	$(POETRY) run isort src tests
-	$(POETRY) run black src tests
+build-sdk:
+	cd python && pip install -e ".[dev]"
 
-package:
-	$(POETRY) build
+test-unit:
+	cd python && pytest tests/unit -v
 
-update:
-	$(POETRY) lock
+test-integration:
+	cd python && pytest tests/integration -v
 
-refresh:
-	$(POETRY) lock --regenerate
+bench:
+	cd python && pytest tests/benchmark -v --tb=short
 
-install:
-	$(POETRY) install
+fmt-sdk:
+	cd python && ruff format .
+
+lint-sdk:
+	cd python && ruff check .
+
+# --- Combined ---
+
+test: test-agent test-unit
+
+fmt: fmt-agent fmt-sdk
+
+lint: lint-agent lint-sdk
+
+clean:
+	rm -rf agent/bin
+	find . -name "__pycache__" -exec rm -rf {} + 2>/dev/null; true
+	find . -name "*.pyc" -delete 2>/dev/null; true
+	find . -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null; true
+	find . -name "*.egg-info" -exec rm -rf {} + 2>/dev/null; true
+
+# --- Dev helpers ---
+
+agent-run: build-agent
+	./agent/bin/taskflow-agent --config config/taskflow.example.yaml

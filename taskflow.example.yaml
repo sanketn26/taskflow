@@ -1,0 +1,45 @@
+# taskflow configuration
+# Shared between taskflow-agent (Go) and the Python SDK.
+# Platform engineers own this file. Developers never touch it.
+
+cluster:
+  node_name: ""                    # auto-generated UUID if empty
+  bind_addr: "0.0.0.0:7946"       # gossip protocol bind address
+  advertise_addr: ""               # routable address peers use to reach this node
+  seeds: []                        # ["10.0.1.1:7946", "10.0.1.2:7946"]
+  mdns: true                       # zero-config discovery on local networks
+
+# Unix socket path — Python SDK connects here
+socket: "/var/run/taskflow/agent.sock"
+
+# Routable IP for direct result delivery callbacks (workers connect back to this)
+advertise_addr: ""                 # set to this machine's external IP
+
+workers:
+  count: 4                         # Python worker processes to spawn
+  labels:
+    workload: "general"            # used by routing rules
+  resources:
+    max_memory_mb: 2048
+    max_cpu_percent: 80
+
+routing:
+  rules: []
+  # Example: route tasks labelled "cpu" to nodes with workload=compute
+  # - match:
+  #     label: "cpu"
+  #   prefer:
+  #     workload: "compute"
+
+result_delivery:
+  mode: "direct"                   # "direct" (zero infra) or "queue" (Kafka, durable)
+
+  direct:
+    max_retries: 3
+    retry_backoff_ms: 500
+    retry_strategy: "exponential"  # "exponential" or "fixed"
+
+  queue:
+    type: "kafka"
+    brokers: []                    # ["kafka:9092"]
+    topic: "taskflow-results"
