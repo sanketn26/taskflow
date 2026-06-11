@@ -21,7 +21,7 @@ build-agent:
 	mkdir -p agent/bin
 	cd agent && go build \
 		-ldflags "-X main.version=$(shell git describe --tags --always 2>/dev/null || echo dev)" \
-		-o bin/taskflow-agent ./cmd/taskflow-agent
+		-o bin/taskwire-agent ./cmd/taskwire-agent
 
 test-agent:
 	cd agent && go test ./...
@@ -70,4 +70,4 @@ clean:
 # --- Dev helpers ---
 
 agent-run: build-agent
-	./agent/bin/taskflow-agent --config config/taskflow.example.yaml
+	./agent/bin/taskwire-agent --config config/taskwire.example.yaml

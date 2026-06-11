@@ -2,31 +2,38 @@
 
 ## Goal
 
-A working single-node `taskflow-agent` binary.
+A working single-node `taskwire-agent` binary.
 Accepts SUBMIT over Unix socket, queues tasks, serves PULL to workers, manages leases with heartbeat + TTL expiry, re-queues tasks on lease expiry. No Python workers yet — verified with a Go test client.
 
 ## Testable Outcome
 
-- `taskflow-agent` starts, creates Unix socket, accepts connections
+- `taskwire-agent` starts, creates Unix socket, accepts connections
 - Go test client submits a task → task enters queue
 - Go test client pulls task → receives task payload + lease_id
 - Go test client heartbeats → lease TTL resets
 - Go test client stops heartbeating → after TTL, task is back in queue and pullable again
 - Go test client pulls + releases → lease removed, task gone from queue
 - Worker manager spawns N processes configured in YAML
+- With `queue.persistence: wal`: submit 5 tasks, `kill -9` the agent, restart → all 5 tasks still pullable
+- Task that expires its lease `max_attempts` times lands in the dead-letter store, not back in the queue
+- Socket file is created with mode `0660`
 
 ---
 
 ## Files
 
 ```
-agent/cmd/taskflow-agent/main.go
+agent/cmd/taskwire-agent/main.go
 agent/internal/ipc/server.go
 agent/internal/queue/queue.go
 agent/internal/queue/lease.go
+agent/internal/queue/store.go          (TaskStore interface + NullStore + factory)
+agent/internal/queue/wal.go            (BoltStore + DurableQueue — persistence: "wal")
+agent/internal/queue/deadletter.go     (dead-letter store after max_attempts)
 agent/internal/worker/manager.go
 agent/internal/queue/queue_test.go
 agent/internal/queue/lease_test.go
+agent/internal/queue/wal_test.go
 agent/internal/ipc/server_test.go
 agent/go.mod
 ```
@@ -75,6 +82,59 @@ Small, focused interface (Interface Segregation). Only what callers need.
 | `Requeue` | Lock, increment `task.Attempts`, prepend to `items[0:0]`, unlock |
 
 **Note:** `Pull` uses a slice shift. For Phase 2 correctness is the goal. Phase 7 hardening may replace with a ring buffer or `container/list` for O(1) head removal.
+
+---
+
+### `agent/internal/queue/store.go` + `wal.go` — durability (the honest at-least-once)
+
+`InMemoryQueue` loses every queued and leased task when the agent restarts. That makes "at-least-once delivery" a half-truth: it only covers *worker* crashes. Durability closes the gap when `queue.persistence: "wal"` is set.
+
+**The seam: ordering and existence are separate concerns.** `Queuer` answers "what runs next" (always in memory, always fast). A new, deliberately tiny `TaskStore` interface answers "what must survive a restart". The queue is *configurable* today and *pluggable* internally — new backends are one file and one registry entry — but storage is **not** an external plugin surface, and Redis/Postgres stores are explicitly out of scope: an external datastore as the durability layer reintroduces the broker this project exists to eliminate.
+
+#### `TaskStore` interface (`store.go`)
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `Put` | `(task *Task) error` | Persist (or update) a task record, fsync'd before return |
+| `Delete` | `(taskID [16]byte) error` | Remove — called only on successful completion |
+| `LoadAll` | `() ([]*Task, error)` | Recovery: every surviving task, for re-queueing at startup |
+| `Close` | `() error` | Flush and release the backing file |
+
+Implementations, selected by a factory from `queue.persistence`:
+
+| Config value | Implementation | Notes |
+|--------------|----------------|-------|
+| `"none"` (default) | `NullStore` | All methods no-ops. The fast path: zero overhead, zero files. |
+| `"wal"` | `BoltStore` | **bbolt** (`go.etcd.io/bbolt`): one file, one writer, crash-safe B-tree, zero operational surface — in the spirit of "no external infrastructure". A hand-rolled segment log is a Phase 8 optimisation at best. Bucket `tasks`: key `task_id` (16B) → msgpack-encoded Task (payload, callback_addr, label, attempts, submitted_at). |
+
+Factory: `NewStore(cfg QueueConfig) (TaskStore, error)` — a `switch` on the string today; the registry stays internal (no `plugin` package, no dlopen). Future in-tree candidates that respect the zero-infra constraint: `sqlite`, `pebble`. Anything requiring a server process gets rejected at design review, not at runtime.
+
+#### `DurableQueue` struct (implements `Queuer`, wraps `InMemoryQueue` + `TaskStore`)
+
+Decorator over `InMemoryQueue`: the in-memory queue remains the source of *ordering*; the store is the source of *existence*. With `NullStore` it degenerates to the plain in-memory behaviour, so there is exactly one queue code path regardless of config.
+
+| Method | Responsibility |
+|--------|----------------|
+| `Push` | `store.Put` first (write-ahead — a crash between the two re-delivers rather than loses), then in-memory `Push`. |
+| `Pull` | In-memory `Pull` only — the store record stays. A pulled-but-unfinished task must survive a restart. |
+| `Complete(taskID)` | Called by the lease `Release` flow: `store.Delete`. This is the only place a task leaves disk. |
+| `Requeue` | In-memory requeue; `store.Put` to update `attempts` so dead-letter accounting survives restarts. |
+| `Recover()` | At startup: `store.LoadAll()`, `Push` everything into the in-memory queue ordered by `submitted_at`. Tasks that were leased at crash time simply reappear as queued — correct under at-least-once. |
+
+**Performance note:** one bbolt tx per submit caps throughput around a few thousand tasks/s on SSDs. Batch commits (group commits every 5ms or N submits, whichever first) recover most of it. Document the trade-off in the config reference; `persistence: "none"` remains the default and the fast path.
+
+---
+
+### `agent/internal/queue/deadletter.go`
+
+Without this, a poison task (segfaults the worker, or always outlives its lease) re-queues forever and eats a worker slot for eternity.
+
+| Method | Signature | Responsibility |
+|--------|-----------|----------------|
+| `Add` | `(task *Task, reason string)` | Store task + reason + timestamp. In-memory ring (cap 1000) when persistence off; bbolt `deadletter` bucket when on. |
+| `List` | `() []DeadLetter` | For the `status` command (Phase 7) |
+
+Wire-in point: `LeaseManager.expire()` — before calling `queue.Requeue`, check `task.Attempts >= cfg.Queue.MaxAttempts`; if so, `deadletter.Add(task, "max attempts exceeded")` instead, and log at WARN with the task_id.
 
 ---
 
@@ -142,7 +202,7 @@ Depends on `Queuer` and `Leaser` interfaces — not concrete types. Dependency I
 | Method | Responsibility |
 |--------|----------------|
 | `NewServer(socketPath string, q Queuer, l Leaser) *Server` | Store fields, do not connect yet |
-| `Start() error` | Remove stale socket file if exists (`os.Remove`). `net.Listen("unix", socketPath)`. Store listener. Start `accept()` goroutine. |
+| `Start() error` | Remove stale socket file if exists (`os.Remove`). `net.Listen("unix", socketPath)`. **Set permissions before accepting:** `os.Chmod(socketPath, 0o660)` and chown group to `cfg.SocketGroup` if it exists — anyone who can write this socket can execute arbitrary Python (cloudpickle), so world-writable is a local-privilege-escalation hole. Store listener. Start `accept()` goroutine. |
 | `Stop() error` | Close listener (causes `accept()` to return error and exit). `wg.Wait()` for all active connections to finish. |
 | `accept` (private goroutine) | Loop: `listener.Accept()`. On error, if listener is closed return. Otherwise log and continue. For each conn: `wg.Add(1)`, `go handleConn(conn)`. |
 | `handleConn(conn net.Conn)` | `defer wg.Done()`, `defer conn.Close()`. Loop: `protocol.ReadFrame(conn)`. On `io.EOF` exit cleanly. Dispatch by `frame.Type`: SUBMIT → `handleSubmit`, PULL → `handlePull`, HEARTBEAT → `handleHeartbeat`. Unknown type → log and continue. |
@@ -180,12 +240,12 @@ Depends on `Queuer` and `Leaser` interfaces — not concrete types. Dependency I
 | `NewManager(cfg WorkerConfig, socketPath string) *Manager` | Initialise |
 | `Start() error` | Spawn `cfg.Count` workers via `spawn()`. Start `monitor()` goroutine. |
 | `Stop() error` | Close `stopCh`. Under lock, SIGTERM all `workers[i].cmd.Process`. `wg.Wait()`. |
-| `spawn() (*workerProcess, error)` | `exec.Command("python3", "-m", "taskflow.worker.runner", socketPath)`. Set `Stdout`/`Stderr` to os.Stdout/Stderr for visible logs. `cmd.Start()`. Store in `workers`. |
+| `spawn() (*workerProcess, error)` | `exec.Command("python3", "-m", "taskwire.worker.runner", socketPath)`. Set `Stdout`/`Stderr` to os.Stdout/Stderr for visible logs. `cmd.Start()`. Store in `workers`. |
 | `monitor` (private goroutine) | For each worker: `go watchWorker(wp)`. `watchWorker` calls `wp.cmd.Wait()` blocking until exit. On unexpected exit (and `stopCh` not closed), calls `spawn()` to replace. Rate-limit restarts: if worker lived < 1s, sleep 5s before respawn to prevent tight crash loop. |
 
 ---
 
-### `agent/cmd/taskflow-agent/main.go`
+### `agent/cmd/taskwire-agent/main.go`
 
 Wires everything together. No business logic here — only composition.
 
@@ -236,9 +296,34 @@ Uses a real Unix socket. Test spins up Server, connects with a raw Go client.
 | `TestHeartbeat_Accepted` | SUBMIT, PULL (get leaseID), HEARTBEAT with leaseID → no error |
 | `TestLeaseExpiry_RequeuesForNextPull` | SUBMIT, PULL (hold lease), wait > TTL without heartbeat, PULL again → same task returned |
 
+### `agent/internal/queue/wal_test.go`
+
+| Test | Asserts |
+|------|---------|
+| `TestRecover_AfterRestart` | Push 5 tasks to DurableQueue(BoltStore), close it, open a new one on the same dir → Len() == 5, FIFO order preserved |
+| `TestComplete_RemovesFromDisk` | Push, Pull, Complete, restart → Len() == 0 |
+| `TestPulledNotCompleted_SurvivesRestart` | Push, Pull (no Complete), restart → task is queued again |
+| `TestDeadLetter_AfterMaxAttempts` | Task with Attempts == max → expire moves it to dead-letter, queue stays empty |
+
 ---
 
-## Design Patterns Applied
+## Implementation Guide
+
+Build order:
+
+1. **`InMemoryQueue` + tests** — pure data structure, no I/O.
+2. **`LeaseManager` + tests** — the expiry tests use real short TTLs (50–150ms); use `require.Eventually` rather than bare sleeps to keep them un-flaky.
+3. **`Server`** — start with SUBMIT/PULL only against a fake `Queuer`; add HEARTBEAT once leases work.
+4. **`TaskStore` + `DurableQueue`** — `NullStore` first (one-line methods, proves the decorator), then `BoltStore`. The decorator wraps the already-tested in-memory queue; its tests are mostly restart simulations (close + reopen, never mock the filesystem).
+5. **`Manager`** — last, because it needs a Python interpreter on the test machine; gate its tests behind a build tag if CI lacks one.
+
+Concurrency gotchas to design around (these are the bugs this phase will actually have):
+
+- **Lock ordering in `expire()`**: the spec deliberately unlocks before calling `queue.Requeue` — `LeaseManager` and `Queuer` have separate mutexes, and calling one while holding the other invites deadlock the moment someone adds a reverse call. Keep that discipline; document it in a comment on the mutex fields.
+- **PULL responses and connection writes**: a worker's connection handles both PULL responses and (future) ACKs. All writes to one `net.Conn` must go through a per-connection write mutex — two goroutines interleaving partial frames corrupts the stream irrecoverably.
+- **`handlePull` when queue is empty**: returning an empty ACK and letting the worker back off (as specced) is simple and correct. Resist the temptation to hold the PULL open server-side (long-poll) in this phase — it complicates shutdown; consider it in Phase 7 if the 100ms worker backoff shows up in benchmarks.
+- **Graceful shutdown ordering** in `main.go` matters: stop accepting (server), stop workers, *then* stop the lease manager — reversed, expiring leases re-queue tasks into a queue no one will drain, which is harmless in-memory but writes pointless WAL churn.
+- **Respawn rate-limiting**: the `< 1s lifetime → sleep 5s` rule in `monitor` is load-bearing. A worker that crashes on import (bad deploy) without it forks-bombs the host.
 
 | Pattern | Where | Why |
 |---------|-------|-----|

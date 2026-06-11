@@ -1,5 +1,5 @@
-# taskflow configuration
-# Shared between taskflow-agent (Go) and the Python SDK.
+# taskwire configuration
+# Shared between taskwire-agent (Go) and the Python SDK.
 # Platform engineers own this file. Developers never touch it.
 
 cluster:
@@ -10,7 +10,7 @@ cluster:
   mdns: true                       # zero-config discovery on local networks
 
 # Unix socket path — Python SDK connects here
-socket: "/var/run/taskflow/agent.sock"
+socket: "/var/run/taskwire/agent.sock"
 
 # Routable IP for direct result delivery callbacks (workers connect back to this)
 advertise_addr: ""                 # set to this machine's external IP
@@ -42,4 +42,4 @@ result_delivery:
   queue:
     type: "kafka"
     brokers: []                    # ["kafka:9092"]
-    topic: "taskflow-results"
+    topic: "taskwire-results"

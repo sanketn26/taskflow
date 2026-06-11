@@ -17,11 +17,11 @@ Config-driven result delivery. Add Kafka as a delivery mode alongside direct TCP
 ## Files
 
 ```
-sdk/taskflow/worker/delivery.py           (new — Strategy pattern)
-sdk/taskflow/worker/runner.py             (update: use DeliveryStrategy)
-sdk/taskflow/ipc/result_server.py         (no change)
-sdk/taskflow/ipc/kafka_consumer.py        (new)
-sdk/taskflow/runtime.py                   (update: create correct consumer based on config)
+sdk/taskwire/worker/delivery.py           (new — Strategy pattern)
+sdk/taskwire/worker/runner.py             (update: use DeliveryStrategy)
+sdk/taskwire/ipc/result_server.py         (no change)
+sdk/taskwire/ipc/kafka_consumer.py        (new)
+sdk/taskwire/runtime.py                   (update: create correct consumer based on config)
 sdk/tests/integration/test_queue_delivery.py
 ```
 
@@ -29,7 +29,7 @@ sdk/tests/integration/test_queue_delivery.py
 
 ## Python
 
-### `sdk/taskflow/worker/delivery.py`
+### `sdk/taskwire/worker/delivery.py`
 
 Introduces the Strategy pattern for result delivery. `WorkerRunner` calls `DeliveryStrategy.deliver(...)` — it does not know or care whether delivery is direct or via Kafka.
 
@@ -88,7 +88,7 @@ Delivers result to a Kafka topic. The worker is a producer. Fire-and-forget from
 
 ---
 
-### `sdk/taskflow/worker/runner.py` (updates)
+### `sdk/taskwire/worker/runner.py` (updates)
 
 `WorkerRunner` no longer calls `_deliver_result` directly. It uses `DeliveryStrategy`.
 
@@ -102,7 +102,7 @@ Changes to `WorkerRunner`:
 
 ---
 
-### `sdk/taskflow/ipc/kafka_consumer.py`
+### `sdk/taskwire/ipc/kafka_consumer.py`
 
 The Runtime-side consumer for queue mode. Runs in a background thread, resolves Futures as results arrive.
 
@@ -119,15 +119,17 @@ Provides the same interface contract as `ResultServer` — both call `on_result(
 
 | Method | Signature | Responsibility |
 |--------|-----------|----------------|
-| `__init__` | `(cfg: QueueDeliveryConfig, on_result: Callable)` | Create `KafkaConsumer(cfg.topic, bootstrap_servers=cfg.brokers, group_id=f"taskflow-{socket.gethostname()}", auto_offset_reset="latest", enable_auto_commit=True)`. Store callback. Start daemon thread. |
+| `__init__` | `(cfg: QueueDeliveryConfig, on_result: Callable)` | Create `KafkaConsumer(cfg.topic, bootstrap_servers=cfg.brokers, group_id=f"taskwire-{socket.gethostname()}-{os.getpid()}-{uuid4().hex[:8]}", auto_offset_reset="latest", enable_auto_commit=True)`. Store callback. Start daemon thread. |
 | `stop` | `() -> None` | Set `_stop_event`. `_consumer.close()`. Thread exits on next poll. |
-| `_consume` | `() -> None` | Loop until `_stop_event` set. `records = _consumer.poll(timeout_ms=500)`. For each record: `msgpack.loads(record.value)` → `{task_id, result, is_error}`. Call `_on_result(task_id, result, is_error)`. |
+| `_consume` | `() -> None` | Loop until `_stop_event` set. `records = _consumer.poll(timeout_ms=500)`. For each record: `msgpack.loads(record.value)` → `{task_id, result, is_error}`. Call `_on_result(task_id, result, is_error)`. Tolerate unknown `task_id` (it belongs to another Runtime — `_pending.pop(..., None)` discards it). |
 
-**Note on consumer group:** Each Runtime instance uses `f"taskflow-{socket.gethostname()}"` as group ID. Multiple Runtime instances on the same host share offset commits. If you need per-process isolation, use `f"taskflow-{os.getpid()}"`. Platform engineer can override via config.
+**Consumer group — this must be unique per Runtime, not per host.** Kafka splits a topic's partitions among members of the *same* group. If two Runtime processes on one host shared `taskwire-{hostname}`, each would receive only a subset of partitions — half their results would be delivered to the *other* process and silently dropped, manifesting as futures that randomly never resolve. Every Runtime is its own group (hostname + pid + random suffix for restart safety); each consumes the full topic and discards results that aren't in its `_pending`. This is wasteful (every Runtime reads every result) but correct; partitioning results per-runtime via a reply-topic-per-client scheme is a documented future optimisation, not Phase 6 scope.
+
+**Client library:** use `confluent-kafka` (librdkafka bindings — maintained, fast, C-backed so it doesn't fight the GIL) as the `[kafka]` extra, not `kafka-python`, which has been effectively unmaintained for years. The Protocol-based design means the import is isolated to two files if this ever changes.
 
 ---
 
-### `sdk/taskflow/runtime.py` (updates)
+### `sdk/taskwire/runtime.py` (updates)
 
 `Runtime.__init__` creates either `ResultServer` or `KafkaResultConsumer` based on config. Both provide `stop()` and both call `_on_result`. The rest of `Runtime` is unchanged.
 
@@ -181,15 +183,33 @@ The Go sidecar stamps `delivery_mode` onto the TASK frame. The worker uses it to
 
 ### `sdk/tests/integration/test_queue_delivery.py`
 
-Requires running `taskflow-agent` and Kafka (use `testcontainers` for Kafka in CI).
+Requires running `taskwire-agent` and Kafka (use `testcontainers` for Kafka in CI).
 
 | Test | Asserts |
 |------|---------|
 | `test_direct_mode_still_works` | Ensure Phase 3/4 behaviour unchanged with `mode: direct` |
 | `test_kafka_mode_basic` | `mode: queue`. Submit `@task` fn. `future.result()` resolves correctly. |
-| `test_kafka_retention_on_restart` | Submit task. Kill Runtime before result arrives. Restart Runtime with same consumer group. `future` (re-registered from task_id log) resolves from Kafka backlog. |
+| `test_kafka_retention_on_restart` | Submit task, record `task_id`. Kill Runtime before result arrives. New Runtime created with `Runtime.reattach(task_ids=[...])` (registers bare futures for known IDs) and `auto_offset_reset="earliest"` — future resolves from the Kafka backlog. Note: persisting the task_id list across restarts is the *application's* job; `reattach` is the hook taskwire provides. |
 | `test_direct_delivery_failed_error` | `mode: direct`. Mock callback address that always refuses connection. `max_retries: 2`. After retries: `future.result()` raises `DeliveryFailedError` with correct `task_id`. |
 | `test_kafka_mode_concurrent` | 50 tasks submitted. All Futures resolve. No duplicates (at-least-once with idempotent resolution — duplicate delivery hits `_pending.pop(..., None)` and is discarded). |
+| `test_two_runtimes_one_host` | Two Runtime processes on the same machine, queue mode. Each submits 10 tasks. All 20 futures resolve in the *correct* process (regression test for the consumer-group partitioning bug). |
+
+---
+
+## Implementation Guide
+
+Build order:
+
+1. **`DeliveryStrategy` refactor with direct mode only** — pure mechanical extraction from `WorkerRunner._deliver_result`; the Phase 3/4 integration suite is the safety net and must stay green before Kafka appears.
+2. **`KafkaDelivery`** — test against `testcontainers` Kafka with a raw consumer asserting the message shape.
+3. **`KafkaResultConsumer` + Runtime wiring** — then the e2e tests.
+4. **`Runtime.reattach`** — last, smallest, and clearly documented as the restart-recovery hook.
+
+Gotchas:
+
+- **`flush()` per result is the worker's latency floor in queue mode** (~ms each). Acceptable for v1; note in docs that queue mode trades result latency for durability. Do not batch silently — a worker crash after `send` but before `flush` would lose results.
+- **Worker Kafka producer lifetime**: create once per worker process, not per task (`DeliveryFactory` must cache it; the spec's "created at the start of each task loop iteration" applies to `DirectDelivery`, which is per-envelope, but `KafkaDelivery` is hoisted).
+- **testcontainers in CI**: gate Kafka tests behind a marker (`pytest -m kafka`) so the default suite stays infra-free, matching the Phase 1–5 discipline.
 
 ---
 

@@ -6,7 +6,7 @@ Multi-node self-aware cluster. Sidecars discover each other via gossip (Hashicor
 
 ## Testable Outcome
 
-- 3 `taskflow-agent` processes start on localhost (different gossip ports and socket paths), each sees 3 members
+- 3 `taskwire-agent` processes start on localhost (different gossip ports and socket paths), each sees 3 members
 - Task with `label="node-2"` routes to node 2, not node 1 or 3
 - Kill node 2 while it holds a lease → after TTL, task re-queued on another node → result delivered
 - Node rejoins → work stealing distributes queued tasks to it
@@ -23,7 +23,7 @@ agent/internal/scheduler/scheduler.go
 agent/internal/scheduler/scheduler_test.go
 agent/internal/queue/queue.go          (add StealN method)
 agent/internal/ipc/server.go           (add STEAL handler)
-agent/cmd/taskflow-agent/main.go       (wire cluster + scheduler)
+agent/cmd/taskwire-agent/main.go       (wire cluster + scheduler)
 agent/go.mod                           (add memberlist dependency)
 ```
 
@@ -80,9 +80,17 @@ Broadcast to all peers via gossip metadata. Represents one node's current state.
 | `Members() []NodeInfo` | RLock, copy map values to slice, RUnlock. Return slice. |
 | `UpdateQueueDepth(depth int)` | Lock, update `localNode.QueueDepth`, unlock. Call `list.UpdateNode(timeout)` to re-broadcast metadata. |
 | `NodeMeta(limit int) []byte` | memberlist Delegate method. Marshal `localNode` to JSON (capped at `limit` bytes). Called by memberlist when it needs to broadcast this node's metadata. |
-| `browseMDNS()` | Use `github.com/grandcat/zeroconf` or `net` multicast. Discover peers advertising `_taskflow._tcp`. For each found, call `list.Join([]string{addr})`. |
+| `browseMDNS()` | Use `github.com/grandcat/zeroconf` or `net` multicast. Discover peers advertising `_taskwire._tcp`. For each found, call `list.Join([]string{addr})`. |
 
 **Dependency:** `github.com/hashicorp/memberlist` for gossip. `github.com/grandcat/zeroconf` for mDNS.
+
+#### Gossip encryption
+
+When `cluster.encryption_key` is set (base64 32-byte key), pass it to memberlist via `Config.SecretKey` — memberlist then encrypts all gossip traffic (AES-GCM) and silently drops packets from nodes without the key. This doubles as cluster *admission control*: a stray agent on the LAN can't join. mDNS discovery + no key is acceptable for laptops; the docs must state that any multi-host production deployment sets the key. Validate at startup: `seeds` non-empty or `mdns` off + no key → log a prominent warning.
+
+#### STEAL endpoint authentication
+
+memberlist's SecretKey covers *gossip* only — the cluster TCP endpoint (`StartCluster`) is our own protocol and gets nothing for free. An unauthenticated STEAL endpoint hands serialized Python callables to anyone who connects, and accepts task injection from anyone. When `encryption_key` is set, the cluster TCP handshake is: server sends 16-byte random nonce → client replies `HMAC-SHA256(key, nonce)` → server verifies before processing any frame. Constant-time compare (`hmac.Equal`). No key configured → handshake skipped (single-node / trusted-LAN dev mode), warning logged.
 
 ---
 
@@ -155,7 +163,20 @@ Cluster TCP endpoint — same `Server` but listening on TCP (`cfg.BindAddr`) in 
 
 | Method | Responsibility |
 |--------|----------------|
-| `StartCluster(bindAddr string) error` | `net.Listen("tcp", bindAddr)`. Start accept loop for cluster connections. Same `handleConn` dispatch — STEAL frames arrive here. |
+| `StartCluster(bindAddr string) error` | `net.Listen("tcp", bindAddr)`. Start accept loop for cluster connections. Run the HMAC handshake (see above) before entering `handleConn`. Same `handleConn` dispatch — STEAL frames arrive here. |
+
+---
+
+### Forwarded-task ownership (failure semantics that actually hold)
+
+The testable outcome "kill node 2 while it holds a lease → task re-queued on another node" does **not** fall out of forwarding alone: once a task is pushed to node 2's queue and node 2 dies, nothing elsewhere knows the task existed. Forwarding must keep ownership at the origin:
+
+- When `Route` returns a remote addr, the origin does **not** delete the task. It moves it to a `forwarded` map (`task_id → {peer, deadline}`) and sends a copy.
+- The remote node sends COMPLETE (0x07) to the origin over the cluster connection when the task's lease is released after successful delivery. Origin then drops its shadow copy (and its WAL record).
+- On `NotifyLeave`/failure-detection for a peer, the origin re-queues every entry in `forwarded` belonging to that peer. Combined with at-least-once + idempotency, duplicate execution is possible and documented; lost tasks are not.
+- Same mechanism covers STEAL: the *stolen-from* node keeps the shadow until COMPLETE from the thief.
+
+This is the single most intricate piece of the phase — build it last, after routing and stealing work without failures.
 
 ---
 
@@ -184,6 +205,27 @@ Cluster TCP endpoint — same `Server` but listening on TCP (`cfg.BindAddr`) in 
 | `test_label_routing_e2e` | 2 agents (node-general, node-cpu). Config: label "cpu" routes to node-cpu. Submit `@task(label="cpu")` via SDK. Verify worker on node-cpu handled it (check node-cpu worker log). |
 | `test_node_failure_requeue` | 2 agents. Submit slow task to node-2. Kill node-2 process. After TTL + steal window, task completes on node-1. |
 | `test_work_stealing` | Agent-1 has 20 tasks queued. Start Agent-2 (empty). After 1s, agent-2's workers begin completing tasks (stolen). |
+| `test_steal_requires_auth` | Cluster with encryption_key set. Raw TCP client without the key sends STEAL → connection closed, no tasks leaked. |
+| `test_forwarded_task_survives_peer_death` | Node-1 forwards task to node-2. `kill -9` node-2 before completion. Node-1 re-queues from its `forwarded` map; task completes locally. |
+
+---
+
+## Implementation Guide
+
+Build order:
+
+1. **`GossipCluster` + membership tests** — 3 nodes on localhost, no scheduler yet. memberlist's defaults assume LAN timings; keep `DefaultLANConfig` and only tune in Phase 7.
+2. **`LabelRouter`** — pure function over `[]NodeInfo`, fully unit-testable with no networking.
+3. **Cluster TCP endpoint + handshake** — drive with a raw Go client before wiring WorkStealer to it.
+4. **WorkStealer** — steal-from-tail; verify FIFO at the head is undisturbed.
+5. **Forwarded-task ownership** — last, with the kill-test from day one.
+
+Gotchas:
+
+- **`NodeMeta` size limit**: memberlist caps metadata (512B by default). NodeInfo JSON with many labels can exceed it — use msgpack, keep labels short, and fail loudly at startup if `NodeMeta` would truncate (truncated JSON = nodes silently invisible to routing).
+- **Queue-depth staleness**: gossip metadata propagates in seconds, not ms. Routing on stale depth is fine (it self-corrects via stealing); just don't oscillate — `UpdateQueueDepth` should be rate-limited (e.g. broadcast only on change > 10% or every 2s).
+- **mDNS in CI**: multicast is usually blocked in containerised CI. The mDNS test must be tagged (`//go:build mdns`) and run locally/nightly, not in the default suite — or it will be deleted in frustration within a month.
+- **Don't forward the forwarded**: a task received via forwarding or STEAL is marked (`flags` bit or envelope field) and is never re-forwarded — without this, two misconfigured nodes ping-pong a task forever.
 
 ---
 

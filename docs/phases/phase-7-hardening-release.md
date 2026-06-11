@@ -2,16 +2,22 @@
 
 ## Goal
 
-Production-ready, publicly releasable library. Single `pip install taskflow` on a clean machine. `taskflow-agent` binary installs as a system service. Benchmarks published. Documentation complete.
+Production-ready, publicly releasable library. Single `pip install <package>` on a clean machine. `taskwire-agent` binary installs as a system service. Benchmarks published. Documentation complete.
+
+## Naming (resolved 2026-06-11)
+
+The project was originally called *taskwire*, but `taskwire` on PyPI is OpenStack TaskFlow — an actively published library in the same domain, so both the distribution and the import package would have collided. The project is now **taskwire** (verified available on PyPI): distribution `taskwire`, `import taskwire`, binary `taskwire-agent`, socket under `/var/run/taskwire/`. Before first publish, re-verify the name is still free and register it on TestPyPI early.
 
 ## Testable Outcome
 
-- `pip install taskflow` on a clean Linux and macOS machine — no manual steps
-- `taskflow-agent install` registers and starts a system service
-- `taskflow-agent start/stop/status` work on both Linux (systemd) and macOS (launchd)
+- `pip install <package>` on a clean Linux and macOS machine — no manual steps
+- `taskwire-agent install` registers and starts a system service
+- `taskwire-agent start/stop/status` work on both Linux (systemd) and macOS (launchd)
+- `taskwire-agent status --json` reports queue depth, active leases, worker PIDs, dead-letter count, cluster members
 - Full E2E test passes on clean machine with no prior config
-- Benchmark: taskflow `map` over 1000 tasks is ≥ 2× faster than `ThreadPoolExecutor.map` for CPU-bound work (demonstrates free-threaded + multi-process benefit)
-- All existing Phase 1–6 tests still pass
+- Benchmarks published against honest baselines (see Benchmarks section)
+- Socket is 0660; systemd unit runs as a dedicated non-root user; gossip key documented as required for multi-host
+- All existing Phase 1–6 tests still pass, on standard CPython 3.11–3.13 and free-threaded 3.13t, with and without the Rust extension
 
 ---
 
@@ -21,16 +27,16 @@ Production-ready, publicly releasable library. Single `pip install taskflow` on 
 agent/internal/service/service.go            (new — ServiceManager interface + Detect())
 agent/internal/service/systemd.go            (new — Linux implementation)
 agent/internal/service/launchd.go            (new — macOS implementation)
-agent/cmd/taskflow-agent/main.go             (add install/uninstall subcommands)
+agent/cmd/taskwire-agent/main.go             (add install/uninstall subcommands)
 
-packaging/service/taskflow-agent.service     (systemd unit template)
-packaging/service/io.taskflow.agent.plist    (launchd plist template)
+packaging/service/taskwire-agent.service     (systemd unit template)
+packaging/service/io.taskwire.agent.plist    (launchd plist template)
 packaging/scripts/build_platforms.sh         (cross-compile agent for all targets)
-packaging/scripts/bundle_wheel.sh            (copy binaries into python/taskflow/_bin/)
+packaging/scripts/bundle_wheel.sh            (copy binaries into python/taskwire/_bin/)
 packaging/docker/Dockerfile.agent            (containerised agent)
 
-python/taskflow/_bin.py                      (new — locate bundled binary)
-python/tests/benchmark/bench_taskflow.py     (new)
+python/taskwire/_bin.py                      (new — locate bundled binary)
+python/tests/benchmark/bench_taskwire.py     (new)
 pyproject.toml                               (include _bin/**/* in wheel)
 ```
 
@@ -63,18 +69,18 @@ Factory function. Returns the correct implementation based on OS:
 
 | Method | Responsibility |
 |--------|----------------|
-| `Install(configPath)` | Execute embedded `taskflow-agent.service` template with `{BinaryPath, ConfigPath}`. Write output to `/etc/systemd/system/taskflow-agent.service`. `systemctl daemon-reload`. `systemctl enable taskflow-agent`. |
-| `Uninstall` | `systemctl disable taskflow-agent`. Remove unit file. `systemctl daemon-reload`. |
-| `Start` | `systemctl start taskflow-agent` |
-| `Stop` | `systemctl stop taskflow-agent` |
-| `Status` | `systemctl is-active taskflow-agent` |
+| `Install(configPath)` | Execute embedded `taskwire-agent.service` template with `{BinaryPath, ConfigPath}`. Write output to `/etc/systemd/system/taskwire-agent.service`. `systemctl daemon-reload`. `systemctl enable taskwire-agent`. |
+| `Uninstall` | `systemctl disable taskwire-agent`. Remove unit file. `systemctl daemon-reload`. |
+| `Start` | `systemctl start taskwire-agent` |
+| `Stop` | `systemctl stop taskwire-agent` |
+| `Status` | `systemctl is-active taskwire-agent` |
 
 Templates are embedded using:
 ```go
-//go:embed ../../../packaging/service/taskflow-agent.service
+//go:embed ../../../packaging/service/taskwire-agent.service
 var systemdTemplate string
 
-//go:embed ../../../packaging/service/io.taskflow.agent.plist
+//go:embed ../../../packaging/service/io.taskwire.agent.plist
 var launchdTemplate string
 ```
 
@@ -82,15 +88,15 @@ var launchdTemplate string
 
 | Method | Responsibility |
 |--------|----------------|
-| `Install(configPath)` | Execute embedded `io.taskflow.agent.plist` template. Write to `~/Library/LaunchAgents/io.taskflow.agent.plist`. `launchctl load -w <plist_path>`. |
+| `Install(configPath)` | Execute embedded `io.taskwire.agent.plist` template. Write to `~/Library/LaunchAgents/io.taskwire.agent.plist`. `launchctl load -w <plist_path>`. |
 | `Uninstall` | `launchctl unload -w plist`. Remove file. |
-| `Start` | `launchctl start io.taskflow.agent` |
-| `Stop` | `launchctl stop io.taskflow.agent` |
-| `Status` | `launchctl list io.taskflow.agent` — parse stdout for PID |
+| `Start` | `launchctl start io.taskwire.agent` |
+| `Stop` | `launchctl stop io.taskwire.agent` |
+| `Status` | `launchctl list io.taskwire.agent` — parse stdout for PID |
 
 ---
 
-### `agent/cmd/taskflow-agent/main.go` (additions)
+### `agent/cmd/taskwire-agent/main.go` (additions)
 
 Add subcommands via `flag` or `cobra`:
 
@@ -106,25 +112,36 @@ Add subcommands via `flag` or `cobra`:
 
 ## Packaging
 
-### `packaging/service/taskflow-agent.service`
+### `packaging/service/taskwire-agent.service`
 
 Systemd unit template. Populated by `SystemdManager.Install`.
 
 ```
 [Unit]
-Description=Taskflow Agent
+Description=Taskwire Agent
 After=network.target
 
 [Service]
 ExecStart={{.BinaryPath}} --config {{.ConfigPath}}
 Restart=always
 RestartSec=5
+# The socket executes arbitrary Python on behalf of connecting clients —
+# never run this as root.
+User=taskwire
+Group=taskwire
+RuntimeDirectory=taskwire
+StateDirectory=taskwire
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/taskwire
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-### `packaging/service/io.taskflow.agent.plist`
+`Install` creates the `taskwire` system user/group (`useradd --system`) if missing. Developers who installed the SDK join the `taskwire` group to reach the socket.
+
+### `packaging/service/io.taskwire.agent.plist`
 
 launchd plist template. Populated by `LaunchdManager.Install`.
 
@@ -135,7 +152,7 @@ launchd plist template. Populated by `LaunchdManager.Install`.
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>io.taskflow.agent</string>
+  <string>io.taskwire.agent</string>
   <key>ProgramArguments</key>
   <array>
     <string>{{.BinaryPath}}</string>
@@ -152,18 +169,18 @@ launchd plist template. Populated by `LaunchdManager.Install`.
 
 ### `packaging/scripts/build_platforms.sh`
 
-Cross-compiles `taskflow-agent` for all target platforms. Called by CI before building the Python wheel.
+Cross-compiles `taskwire-agent` for all target platforms. Called by CI before building the Python wheel.
 
 | Target | `GOOS` | `GOARCH` | Output |
 |--------|--------|----------|--------|
-| Linux x86-64 | `linux` | `amd64` | `dist/linux_amd64/taskflow-agent` |
-| macOS Intel | `darwin` | `amd64` | `dist/darwin_amd64/taskflow-agent` |
-| macOS Apple Silicon | `darwin` | `arm64` | `dist/darwin_arm64/taskflow-agent` |
-| Windows x86-64 | `windows` | `amd64` | `dist/windows_amd64/taskflow-agent.exe` |
+| Linux x86-64 | `linux` | `amd64` | `dist/linux_amd64/taskwire-agent` |
+| macOS Intel | `darwin` | `amd64` | `dist/darwin_amd64/taskwire-agent` |
+| macOS Apple Silicon | `darwin` | `arm64` | `dist/darwin_arm64/taskwire-agent` |
+| Windows x86-64 | `windows` | `amd64` | `dist/windows_amd64/taskwire-agent.exe` |
 
 ### `packaging/scripts/bundle_wheel.sh`
 
-Copies compiled binaries from `packaging/dist/{platform}/` into `python/taskflow/_bin/{platform}/` so `poetry build` includes them in the wheel.
+Copies compiled binaries from `packaging/dist/{platform}/` into `python/taskwire/_bin/{platform}/` so `poetry build` includes them in the wheel.
 
 ### `packaging/docker/Dockerfile.agent`
 
@@ -173,13 +190,13 @@ Minimal container image for the agent. Based on `gcr.io/distroless/static`. Copi
 
 ## Python
 
-### `python/taskflow/_bin.py`
+### `python/taskwire/_bin.py`
 
-Locates the `taskflow-agent` binary bundled inside the wheel. Similar to how Playwright ships browser binaries.
+Locates the `taskwire-agent` binary bundled inside the wheel. Similar to how Playwright ships browser binaries.
 
 | Function | Signature | Responsibility |
 |----------|-----------|----------------|
-| `binary_path` | `() -> str` | Return absolute path to bundled binary. Resolve `taskflow/_bin/{platform_tag()}/taskflow-agent` (`.exe` on Windows) relative to this file's location. Raise `RuntimeError` with a clear message if not found — indicates a broken or incomplete wheel. |
+| `binary_path` | `() -> str` | Return absolute path to bundled binary. Resolve `taskwire/_bin/{platform_tag()}/taskwire-agent` (`.exe` on Windows) relative to this file's location. Raise `RuntimeError` with a clear message if not found — indicates a broken or incomplete wheel. |
 | `platform_tag` | `() -> str` | Return `"linux_amd64"`, `"darwin_arm64"`, `"darwin_amd64"`, or `"windows_amd64"` based on `sys.platform` and `platform.machine()`. Raise `RuntimeError` for unsupported platforms. |
 
 The binary is not executed by the Python library at runtime — it is shipped for users who want to run the agent without installing Go. The SDK connects to a running agent; it never starts one.
@@ -190,43 +207,77 @@ The binary is not executed by the Python library at runtime — it is shipped fo
 
 ```toml
 [tool.poetry.include]
-- "taskflow/_bin/**/*"
+- "taskwire/_bin/**/*"
 ```
 
-Build process: `packaging/scripts/bundle_wheel.sh` runs first, populating `python/taskflow/_bin/`. Then `poetry build` includes those binaries in the wheel.
+Build process: `packaging/scripts/bundle_wheel.sh` runs first, populating `python/taskwire/_bin/`. Then `poetry build` includes those binaries in the wheel.
 
 ---
 
 ## Benchmarks
 
-### `python/tests/benchmark/bench_taskflow.py`
+### `python/tests/benchmark/bench_taskwire.py`
 
-Measures taskflow against `concurrent.futures.ThreadPoolExecutor` and `joblib.Parallel`.
+**Baselines must be the honest ones.** Beating `ThreadPoolExecutor` at CPU-bound work on GIL CPython is a strawman — *anything* multi-process wins that. The baselines a skeptical reader will demand:
 
-**CPU-bound benchmark** (benefits from Python 3.13 free-threaded + multi-process workers):
+| Scenario | Baseline | What it proves |
+|----------|----------|----------------|
+| CPU-bound, 1000 tasks | `ProcessPoolExecutor` | taskwire's overhead vs the stdlib's same-machine multi-process answer. Target: within 10% on one node; the win is that the *same code* then scales to N nodes. |
+| CPU-bound, 1000 tasks, 3 nodes | `ProcessPoolExecutor` (1 node — its ceiling) | the actual value proposition: horizontal scale with zero infra |
+| Throughput + latency, small tasks | Celery + Redis (`solo` and `prefork`) | "Celery without the broker" needs numbers vs Celery *with* the broker: submit→result round-trip latency p50/p99, tasks/s sustained |
+| I/O-bound, 200 × sleep(10ms) | `ThreadPoolExecutor` | honesty in the other direction: threads will *win* this on one machine. Publish it anyway and say so — credibility is the currency of a benchmarks page. |
+
+Also benchmark **internally**: pure-Python vs Rust codec/result-server (justifies `native/` in the README), and `persistence: none` vs `wal` submit throughput (documents the durability tax).
 
 ```
-Task: compute SHA-256 of a 1MB buffer 100 times
-Items: 100 tasks
-Measure: wall time for all futures to resolve
+CPU task: compute SHA-256 of a 1MB buffer 100 times
+Measure: wall time for all futures to resolve; report p50/p99 per-task latency, not just totals
+Environment: pinned in docs/benchmarks/ (machine type, Python version, GIL vs free-threaded)
 ```
-
-**I/O-bound benchmark** (simulates network latency):
-
-```
-Task: sleep(0.01)
-Items: 200 tasks
-Measure: wall time (should be ~0.01s with enough workers)
-```
-
-**Target numbers** (to publish in README):
-
-| Scenario | ThreadPoolExecutor | joblib | taskflow |
-|----------|--------------------|--------|----------|
-| CPU-bound 100 tasks | baseline | ~1× | ≥ 2× faster |
-| I/O-bound 200 tasks | baseline | ~1× | ≥ 1.5× faster |
 
 Benchmarks run in CI and results committed to `docs/benchmarks/` on each release.
+
+---
+
+## Observability
+
+A queue you cannot inspect is a queue you cannot trust in production. Minimum viable surface, all read-only:
+
+| Surface | Detail |
+|---------|--------|
+| `taskwire-agent status --json` | Connects to the local socket, sends a STATUS frame (new type `0x0A`, local-socket only — never served on the cluster TCP listener). Returns: queue depth, active leases (task_id, age, attempts), worker PIDs + restart counts, dead-letter count, cluster members + their queue depths. Human-readable table without `--json`. |
+| `taskwire-agent deadletter list / requeue <task_id>` | Inspect and retry dead-lettered tasks. The requeue path is the operator's poison-task recovery story. |
+| Prometheus (optional) | `metrics.listen_addr` in config; when set, expose `/metrics`: `taskwire_queue_depth`, `taskwire_tasks_submitted_total`, `taskwire_tasks_completed_total`, `taskwire_lease_expiries_total`, `taskwire_deadletter_total`, `taskwire_worker_restarts_total`. Counters live in the queue/lease structs from the start — the endpoint just reads them. |
+| Structured logs | `log/slog` JSON in the agent; task_id as a field everywhere a task is touched. The worker logs task start/end/duration at INFO. |
+
+---
+
+## Security Hardening (release gate)
+
+The threat model in one sentence: **the agent executes arbitrary pickled Python from anyone who can reach its socket, and ships pickled callables between nodes.** Every item below follows from that.
+
+| Item | Detail |
+|------|--------|
+| Non-root agent | systemd `User=taskwire`; launchd runs per-user. `Install` refuses to write a root-running unit. |
+| Socket permissions | 0660 + `socket_group` (Phase 2) — verified by `test_socket_permissions` in the e2e suite |
+| Cluster auth | gossip `encryption_key` + HMAC handshake on the cluster TCP listener (Phase 5); README's multi-host section makes the key a step 1, not a footnote |
+| Honest docs | A SECURITY.md stating plainly: task payloads are code; the socket is an arbitrary-code-execution boundary; never expose the cluster port to untrusted networks. Users respect software that states its trust model; they abandon software that hides it. |
+| Frame limits | `max_frame_size` enforced on every listener (Phase 1) — fuzz the codec with `go-fuzz`/`atheris` here |
+
+---
+
+## Wheel Building (Rust + Go in one package)
+
+The wheel carries two native artifacts: the Go agent binary (`_bin/`) and the Rust extension (`_native`). Build matrix via `cibuildwheel` + `maturin`:
+
+| Step | Tool |
+|------|------|
+| Cross-compile agent | `build_platforms.sh` (Go — trivial cross-compilation) |
+| Build `_native` per platform/abi3 | `maturin` under `cibuildwheel` (abi3-py311 → one wheel per OS/arch covers CPython ≥ 3.11) |
+| Bundle agent into wheel | `bundle_wheel.sh` before the wheel is finalised |
+| sdist fallback | sdist must install and pass tests with *neither* native artifact — pure-Python codec/result-server/heartbeat, agent downloaded separately or built from source. CI has an explicit `TASKWIRE_PURE_PYTHON=1` job. |
+
+Free-threaded (`cp313t`) wheels for `_native` ship only when PyO3's free-threaded support is stable for our usage; until then 3.13t users get the (perfectly correct there) pure-Python paths.
 
 ---
 
@@ -234,13 +285,16 @@ Benchmarks run in CI and results committed to `docs/benchmarks/` on each release
 
 | Item | Description |
 |------|-------------|
+| **Name consistency check** | Project renamed taskwire → taskwire (old name is OpenStack TaskFlow on PyPI). Before publish: grep the whole repo, systemd/launchd templates, and socket default paths for any leftover `taskwire`; re-verify `taskwire` is still free on PyPI. |
 | Semantic versioning | `0.1.0` for first public release |
 | Go binary versioned | `ldflags -X main.version=$(git describe --tags)` |
-| Python `__version__` | From `pyproject.toml` via `importlib.metadata.version("taskflow")` |
+| Python `__version__` | From `pyproject.toml` via `importlib.metadata.version(<package>)` |
+| Supported-Python honesty | Classifiers: 3.11, 3.12, 3.13 (+3.13t experimental). `requires-python = ">=3.11"` — not `>=3.13`, which would exclude ~everyone. |
 | Changelog | Update `CHANGELOG.md` with all Phase 1–7 features |
-| PyPI release | `poetry publish` to PyPI; test on TestPyPI first |
+| PyPI release | Publish to TestPyPI first; install-test the actual artifacts on clean VMs |
 | GitHub release | Tag `v0.1.0`, attach pre-built agent binaries as release assets |
-| README | Value proposition, quick start (5 lines), config reference, benchmark table |
+| README | Value proposition, quick start (5 lines), *durability and trust-model paragraphs above the fold*, config reference, benchmark table with honest baselines |
+| SECURITY.md | Trust model + disclosure contact |
 
 ---
 
@@ -248,11 +302,13 @@ Benchmarks run in CI and results committed to `docs/benchmarks/` on each release
 
 | Test | Asserts |
 |------|---------|
-| `test_install_service_linux` | (CI, Linux) `taskflow-agent install` writes unit file, `systemctl is-active` returns "active" |
-| `test_install_service_macos` | (CI, macOS) `taskflow-agent install` writes plist, `launchctl list` shows pid |
+| `test_install_service_linux` | (CI, Linux) `taskwire-agent install` writes unit file, `systemctl is-active` returns "active" |
+| `test_install_service_macos` | (CI, macOS) `taskwire-agent install` writes plist, `launchctl list` shows pid |
 | `test_binary_path_found` | `_bin.binary_path()` returns a path that exists and is executable |
-| `test_fresh_machine_e2e` | Docker container with only `pip install taskflow`. Run `taskflow-agent start`. Submit task. Verify result. |
-| `bench_cpu_bound` | taskflow ≥ 2× faster than ThreadPoolExecutor |
+| `test_fresh_machine_e2e` | Docker container with only `pip install <package>`. Run `taskwire-agent start`. Submit task. Verify result. |
+| `test_socket_permissions` | Socket file mode is 0660 after agent start |
+| `test_status_json` | `taskwire-agent status --json` returns parseable JSON with queue_depth, workers, leases keys |
+| `bench_cpu_bound` | Single node: within 10% of ProcessPoolExecutor. 3 nodes: > 2× ProcessPoolExecutor's single-node ceiling. |
 
 ---
 

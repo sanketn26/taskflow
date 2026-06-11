@@ -1,6 +1,6 @@
-# Taskflow
+# Taskwire
 
-Taskflow is a lightweight, opinionated, optionally distributed task processing framework for Python. It is designed to help developers manage and execute tasks efficiently across multiple systems. With Taskflow, you can easily define, schedule, and monitor tasks, making it an ideal choice for building scalable and reliable distributed applications.
+Taskwire is a lightweight, opinionated, optionally distributed task processing framework for Python. It is designed to help developers manage and execute tasks efficiently across multiple systems. With Taskwire, you can easily define, schedule, and monitor tasks, making it an ideal choice for building scalable and reliable distributed applications.
 
 ## Features
 
@@ -11,10 +11,10 @@ Taskflow is a lightweight, opinionated, optionally distributed task processing f
 
 ## Getting Started
 
-To get started with Taskflow, install it using pip:
+To get started with Taskwire, install it using pip:
 
 ```bash
-pip install taskflow
+pip install taskwire
 ```
 
 Define your tasks and start processing them with ease. For more detailed documentation and examples, visit the [official documentation](https://example.com).
@@ -25,5 +25,5 @@ We welcome contributions! Please read our [contributing guidelines](https://exam
 
 ## License
 
-Taskflow is licensed under the MIT License. See the [LICENSE](https://example.com/license) file for more details.
+Taskwire is licensed under the MIT License. See the [LICENSE](https://example.com/license) file for more details.
 

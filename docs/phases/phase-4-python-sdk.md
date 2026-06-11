@@ -20,10 +20,11 @@ Developer-facing API. `@task`, `Runtime`, `TaskFuture`. The developer writes a d
 ## Files
 
 ```
-sdk/taskflow/task.py
-sdk/taskflow/future.py
-sdk/taskflow/runtime.py
-sdk/taskflow/__init__.py
+sdk/taskwire/task.py
+sdk/taskwire/future.py
+sdk/taskwire/runtime.py
+sdk/taskwire/__init__.py
+native/src/result_server.rs            (Rust ResultServer — preferred when built)
 sdk/tests/unit/test_task.py
 sdk/tests/unit/test_future.py
 sdk/tests/integration/test_sdk_e2e.py
@@ -33,7 +34,7 @@ sdk/tests/integration/test_sdk_e2e.py
 
 ## Python
 
-### `sdk/taskflow/task.py`
+### `sdk/taskwire/task.py`
 
 #### `TaskDefinition`
 
@@ -73,11 +74,11 @@ Implementation: check if `func is not None` (bare decorator) or `func is None` (
 
 ---
 
-### `sdk/taskflow/future.py`
+### `sdk/taskwire/future.py`
 
 #### `TaskFuture`
 
-Result handle returned by `Runtime.submit`. Thread-safe — `_set_result` and `_set_exception` are called from the `ResultServer` thread; `result()` is called from the user's thread. Python 3.13 free-threaded: no GIL, so the `threading.Event` synchronisation is mandatory.
+Result handle returned by `Runtime.submit`. Thread-safe — `_set_result` and `_set_exception` are called from the result-server thread (Rust or Python); `result()` is called from the user's thread. The `threading.Event` synchronisation is mandatory on every build — never rely on the GIL for visibility, and on free-threaded builds there is no GIL to rely on.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -91,13 +92,16 @@ Result handle returned by `Runtime.submit`. Thread-safe — `_set_result` and `_
 | `__init__` | `(task_id: bytes)` | Store task_id, create Event, set fields to None |
 | `result` | `(timeout: float \| None = None) -> Any` | `self._event.wait(timeout)`. If not set after wait: raise `TimeoutError(f"Task {task_id.hex()[:8]} timed out")`. If `_exception` is set: `raise self._exception`. Return `self._result`. |
 | `done` | `() -> bool` | Return `self._event.is_set()` |
+| `cancel` | `() -> bool` | Delegate to `Runtime._cancel(task_id)`: send CANCEL (0x06) frame, read ACK. If ACK flags=0x00 (sidecar removed it from the queue before any worker pulled it): resolve self with `CancelledError`, return `True`. If flags=0x01 (already leased): return `False` — the task will run to completion; cancellation is best-effort, exactly like `concurrent.futures`. |
 | `exception` | `() -> BaseException \| None` | If not `done()`: raise `RuntimeError("Future is not done yet")`. Return `self._exception`. |
 | `_set_result` | `(value: Any) -> None` | Store `_result = value`, `_event.set()`. Called only by Runtime. |
 | `_set_exception` | `(exc: BaseException) -> None` | Store `_exception = exc`, `_event.set()`. Called only by Runtime. |
 
+The API deliberately mirrors `concurrent.futures.Future` (`result(timeout)`, `done()`, `cancel()`, `exception()`) — developers already know this contract, and it keeps a later `asyncio` bridge (`asyncio.wrap_future`-style) cheap.
+
 ---
 
-### `sdk/taskflow/runtime.py`
+### `sdk/taskwire/runtime.py`
 
 The Facade. Hides `SidecarClient`, `ResultServer`, frame encoding, and config entirely. Developer interacts with this class only.
 
@@ -122,11 +126,43 @@ The Facade. Hides `SidecarClient`, `ResultServer`, frame encoding, and config en
 | `_on_result` | `(task_id: bytes, result_bytes: bytes, is_error: bool) -> None` | Under `_lock`, pop `future = _pending.pop(task_id, None)`. If `future is None`: discard silently (duplicate delivery — at-least-once). If `is_error`: `future._set_exception(TaskExecutionError(task_id, ..., cloudpickle.loads(result_bytes)))`. Else: `future._set_result(cloudpickle.loads(result_bytes))`. |
 | `_build_payload` | `(task: TaskDefinition, args: tuple, kwargs: dict) -> bytes` | `msgpack.dumps({"task_bytes": cloudpickle.dumps({"func": task.func, "args": args, "kwargs": kwargs}), "callback_addr": self._result_server.address, "label": task.label or "", "idempotent": task.idempotent})` |
 
+Additions to the table above:
+
+| Method | Signature | Responsibility |
+|--------|-----------|----------------|
+| `_cancel` | `(task_id: bytes) -> bool` | Send `Frame(CANCEL, task_id, 0, b"")` via `_sidecar`, read ACK. Used by `TaskFuture.cancel()`. |
+
+**`_on_result` hardening:** `cloudpickle.loads(result_bytes)` can itself raise (missing class on the client side, version skew). Wrap it; on failure resolve the future with `TaskExecutionError(task_id, "result deserialisation failed: ...")` rather than letting the exception kill the result-server callback thread — a dead callback thread means every subsequent future hangs forever, which is the worst possible failure mode.
+
 **Pattern:** Facade (hides all infrastructure). Null Object (`_pending.pop(..., None)` on duplicate delivery — silently discard rather than error). Context Manager for resource cleanup.
 
 ---
 
-### `sdk/taskflow/__init__.py`
+### `native/src/result_server.rs` — Rust ResultServer (`taskwire._native.ResultServer`)
+
+Drop-in replacement for the Phase 3 pure-Python `ResultServer`; `Runtime.__init__` selects it when importable. Same constructor and surface: `address` property, `stop()`, `on_result` callback.
+
+What lives where:
+
+| In Rust (no GIL) | In Python (GIL held briefly) |
+|------------------|------------------------------|
+| `TcpListener` accept loop | — |
+| Per-connection thread, `read_exact` frame parse | — |
+| Frame validation (version, size cap) | — |
+| — | the `on_result(task_id, payload, is_error)` callback: `Python::with_gil(\|py\| cb.call1(py, (...)))` |
+
+Why it pays: with 8 workers finishing tasks concurrently against a GIL-build Runtime, eight Python handler threads contend with the user's own code for the GIL on every result. In Rust, parsing and socket I/O cost the GIL nothing; only the dict-update callback does. The callback should therefore stay tiny (it is: pop + `Event.set`).
+
+Implementation notes:
+
+- Spawn `std::thread` per connection (connections are short-lived, one frame each); a tokio runtime is overkill and complicates the wheel — revisit only if benchmarks demand it.
+- `stop()` must unblock `accept()`: connect-to-self on loopback after setting the stop flag, the standard trick.
+- Hold the callback as `Py<PyAny>`; never call it while holding any Rust-side lock (a callback that blocks on the GIL while a GIL-holding thread waits on that lock is a deadlock).
+- Keep the Phase 3 Python implementation as the fallback and as the differential-testing reference: the e2e suite runs against both (`TASKWIRE_PURE_PYTHON=1` env toggle).
+
+---
+
+### `sdk/taskwire/__init__.py`
 
 Public surface area — only export what developers need.
 
@@ -135,7 +171,7 @@ from .task import task, TaskDefinition, BatchSubmission
 from .runtime import Runtime
 from .future import TaskFuture
 from .exceptions import (
-    TaskflowError,
+    TaskwireError,
     SidecarNotRunning,
     ConfigError,
     TaskExecutionError,
@@ -145,7 +181,7 @@ from .exceptions import (
 __all__ = [
     "task", "TaskDefinition", "BatchSubmission",
     "Runtime", "TaskFuture",
-    "TaskflowError", "SidecarNotRunning", "ConfigError",
+    "TaskwireError", "SidecarNotRunning", "ConfigError",
     "TaskExecutionError", "DeliveryFailedError",
 ]
 ```
@@ -181,7 +217,7 @@ No sidecar needed.
 
 ### `sdk/tests/integration/test_sdk_e2e.py`
 
-Requires running `taskflow-agent`.
+Requires running `taskwire-agent`.
 
 | Test | Asserts |
 |------|---------|
@@ -191,6 +227,27 @@ Requires running `taskflow-agent`.
 | `test_context_manager` | `with Runtime() as rt:` — no resource leaks after block |
 | `test_sidecar_not_running` | `Runtime(config="path/to/bad_socket.yaml")` raises `SidecarNotRunning` immediately |
 | `test_concurrent_submit_100` | 100 tasks submitted, all futures resolve, correct values, within 10s |
+| `test_cancel_unleased` | Pause workers (workers.count=0 config), submit, `future.cancel()` returns True, `future.result()` raises `CancelledError` |
+| `test_cancel_too_late` | Submit a running slow task, `cancel()` returns False, `result()` still returns the value |
+| `test_both_result_servers` | Full suite passes with `TASKWIRE_PURE_PYTHON=1` and without (Rust) — parametrised fixture |
+
+---
+
+## Implementation Guide
+
+Build order:
+
+1. **`task.py` + `future.py` with unit tests** — zero I/O, pure contract work. Get the decorator's three forms and the Future state machine exact.
+2. **`Runtime` against the real agent** — submit/result happy path first, then exception propagation, then `map`.
+3. **`cancel()`** — needs the CANCEL handler added to the Go server (`handleCancel`: remove from queue by task_id → ACK 0x00, else ACK 0x01). Small, but it's the first sidecar change driven by the SDK; do it after the happy path is stable.
+4. **Rust `ResultServer`** — last; the Python one is already passing e2e, so wiring the Rust one in is a pure swap validated by `test_both_result_servers`.
+
+Gotchas:
+
+- **`shutdown(wait=True)` deadlock**: draining with `f.result(timeout=30)` while the result receiver is already stopped hangs every future. Order is law: drain *first*, stop receiver second. Encode that in a comment and a regression test.
+- **`_pending` leak**: a future whose result is never delivered (worker host died, direct delivery exhausted) sits in `_pending` forever. Acceptable for this phase, but track it: add `Runtime.pending_count` property now so Phase 7 observability has the hook.
+- **`uuid.uuid4().bytes` is fine** — don't reach for anything fancier for task IDs; collision risk is negligible and the sidecar treats IDs as opaque.
+- **Free-threaded wheels**: `cp313t` users get the pure-Python fallback until the PyO3 free-threaded story is marked stable in CI; that combination must stay green in the test matrix.
 
 ---
 

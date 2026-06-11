@@ -3,31 +3,34 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "taskflow"
+name = "taskwire"
 version = "0.1.0"
 description = "High-performance distributed task execution — pythonic tasks, Go-powered runtime, no broker required"
 authors = ["Sanket Naik <sanketn@gmail.com>"]
 license = "MIT"
 readme = "README.md"
-homepage = "https://taskflow.io"
-repository = "https://github.com/sanketn26/taskflow.git"
-documentation = "https://readthedocs.org"
+homepage = "https://github.com/sanketn26/taskwire"
+repository = "https://github.com/sanketn26/taskwire.git"
+documentation = "https://github.com/sanketn26/taskwire/tree/main/docs"
 keywords = ["tasks", "distributed", "parallel", "worker", "queue", "async"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
-packages = [{include = "taskflow", from = "python"}]
+packages = [{include = "taskwire", from = "python"}]
 
 [tool.poetry.dependencies]
-python = ">=3.13"
+python = ">=3.11"
 cloudpickle = "^3.0"
 pyyaml = "^6.0"
 msgpack = "^1.0"
+confluent-kafka = {version = "^2.5", optional = true}
 
 [tool.poetry.extras]
-kafka = ["kafka-python"]
+kafka = ["confluent-kafka"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3"
@@ -35,7 +38,7 @@ pytest-cov = "*"
 ruff = "^0.4"
 
 [tool.poetry.urls]
-homepage = "https://taskflow.io"
-repository = "https://github.com/sanketn26/taskflow.git"
-bug-tracker = "https://github.com/sanketn26/taskflow/issues"
-changelog = "https://github.com/sanketn26/taskflow/blob/main/CHANGELOG.md"
+homepage = "https://github.com/sanketn26/taskwire"
+repository = "https://github.com/sanketn26/taskwire.git"
+bug-tracker = "https://github.com/sanketn26/taskwire/issues"
+changelog = "https://github.com/sanketn26/taskwire/blob/main/CHANGELOG.md"
