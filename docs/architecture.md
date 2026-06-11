@@ -260,8 +260,11 @@ taskwire/
 │   │   ├── ipc/                  SidecarClient, ResultServer
 │   │   └── worker/               WorkerRunner (spawned by agent)
 │   └── tests/
+│       ├── harness/              AgentHarness, ClusterHarness, ChaosProxy, ledger
+│       │                         (see docs/testing-harness.md)
 │       ├── unit/                 no sidecar needed
-│       └── integration/          requires running agent
+│       ├── integration/          requires running agent
+│       └── chaos/                fault-injection scenarios, -m chaos
 │
 ├── native/                       Rust extension crate (taskwire._native)
 │   ├── Cargo.toml                pyo3 + maturin, abi3-py311
@@ -300,6 +303,8 @@ Each phase doc carries its own build-order section; this is the cross-phase view
 | 9 | Phase 7 (hardening + release) | Packaging, service install, observability, honest benchmarks, security gate. The name re-check (`taskwire` still free) happens here. |
 
 Parallelisation: steps 5 and 6 are independent of each other (different languages, different packages) and both depend only on step 4. Phase 6 is independent of Phase 5. A second contributor's best entry points are therefore `BoltStore` (6) or Kafka delivery (8).
+
+The test harness (`docs/testing-harness.md`) is built in slices alongside the steps above — `AgentHarness` + fault injection points with step 2, the execution ledger with step 3, `ChaosProxy` with step 4, `ClusterHarness` with step 7. From step 7 onward, a release candidate ships only after a green nightly chaos run on that commit.
 
 Deferred by design: long-poll PULL, ring-buffer queue, per-client Kafka reply topics, custom WAL — all listed in their phase docs as Phase 7+/Phase 8 items. None block a release.
 
