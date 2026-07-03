@@ -19,11 +19,11 @@ No execution, no networking, no processes. Pure data encoding and config parsing
 ## Files
 
 ```
-sdk/taskwire/protocol/messages.py
-sdk/taskwire/protocol/frames.py        (pure-Python codec — always present)
-sdk/taskwire/protocol/__init__.py      (selects Rust codec if importable, else pure Python)
-sdk/taskwire/config.py
-sdk/taskwire/exceptions.py
+python/taskwire/protocol/messages.py
+python/taskwire/protocol/frames.py        (pure-Python codec — always present)
+python/taskwire/protocol/__init__.py      (selects Rust codec if importable, else pure Python)
+python/taskwire/config.py
+python/taskwire/exceptions.py
 
 native/Cargo.toml                      (pyo3, maturin, abi3-py311)
 native/src/lib.rs
@@ -39,7 +39,7 @@ agent/internal/config/config_test.go
 
 ## Python
 
-### `sdk/taskwire/exceptions.py`
+### `python/taskwire/exceptions.py`
 
 Single-responsibility exception hierarchy. All exceptions inherit from `TaskwireError` so callers can catch broadly or narrowly.
 
@@ -57,7 +57,7 @@ Single-responsibility exception hierarchy. All exceptions inherit from `Taskwire
 
 ---
 
-### `sdk/taskwire/protocol/messages.py`
+### `python/taskwire/protocol/messages.py`
 
 | Symbol | Type | Purpose |
 |--------|------|---------|
@@ -67,19 +67,20 @@ Single-responsibility exception hierarchy. All exceptions inherit from `Taskwire
 
 | Name | Value | Direction | Meaning |
 |------|-------|-----------|---------|
-| `SUBMIT` | `0x01` | App → Sidecar | Submit a task for execution |
+| `SUBMIT` | `0x01` | App → Sidecar; Sidecar → Sidecar in Phase 5 forwarding | Submit a task for execution. Phase 5 forwarded SUBMIT frames set flag `0x04`. |
 | `PULL` | `0x02` | Worker → Sidecar | Request next available task |
 | `TASK` | `0x03` | Sidecar → Worker | Deliver task with lease |
 | `HEARTBEAT` | `0x04` | Worker → Sidecar | Keep lease alive |
 | `RESULT` | `0x05` | Worker → App | Deliver result (direct mode) |
 | `CANCEL` | `0x06` | App → Sidecar | Best-effort cancellation (Phase 4 uses it; defined now so the value is reserved) |
-| `COMPLETE` | `0x07` | Sidecar → App | Lease released notification |
+| `COMPLETE` | `0x07` | Worker → Sidecar (also Sidecar → Sidecar and Sidecar → App later) | Task finished: release lease, delete WAL record. Payload: msgpack `{lease_id, task_id, status: "ok"|"delivery_failed", reason}`. Handled in Phase 2; without it a finished task's lease would expire and re-run forever. |
 | `STEAL` | `0x08` | Sidecar → Sidecar | Request tasks from peer (Phase 5) |
-| `ACK` | `0x09` | Any → Any | Generic acknowledgement |
+| `ACK` | `0x09` | Any → Any | Generic acknowledgement; carries msgpack `{task_id}` when acknowledging SUBMIT |
+| `STATUS` | `0x0A` | App/CLI → Sidecar | Agent introspection snapshot (local socket only). Implemented in Phase 2 — the test harness needs it; the `status --json` CLI arrives in Phase 7. |
 
 ---
 
-### `sdk/taskwire/protocol/frames.py`
+### `python/taskwire/protocol/frames.py`
 
 #### `Frame` (dataclass, frozen=True)
 
@@ -89,7 +90,7 @@ Immutable value object representing one message on the wire.
 |-------|------|-------------|
 | `msg_type` | `MessageType` | Message type enum value |
 | `task_id` | `bytes` | 16-byte UUID in raw form |
-| `flags` | `int` | Bit field: `0x01` = error result, `0x02` = idempotent task |
+| `flags` | `int` | Bit field: `0x01` = error result, `0x02` = idempotent task, `0x04` = forwarded task (Phase 5; never re-forward) |
 | `payload` | `bytes` | Message-specific body (cloudpickle, msgpack, or empty) |
 
 The wire header carries a leading `version` byte (`PROTOCOL_VERSION = 0x01`). It is *not* a `Frame` field — the codec writes it on encode and validates it on decode. Decoding a frame with an unknown version raises `ProtocolError("unsupported protocol version")`. This one byte is what allows v0.2 to evolve the format without silently corrupting v0.1 peers.
@@ -132,7 +133,7 @@ All methods are pure functions. No instantiation needed.
 
 ### `native/src/frame.rs` — Rust codec (`taskwire._native`)
 
-Same public API as `frames.py` so the two are drop-in interchangeable. `sdk/taskwire/protocol/__init__.py` selects at import time:
+Same public API as `frames.py` so the two are drop-in interchangeable. `python/taskwire/protocol/__init__.py` selects at import time:
 
 ```python
 try:
@@ -172,7 +173,7 @@ Key decisions:
 
 ---
 
-### `sdk/taskwire/config.py`
+### `python/taskwire/config.py`
 
 All config classes are frozen dataclasses. Immutable after load — no one mutates config at runtime.
 
@@ -182,6 +183,7 @@ All config classes are frozen dataclasses. Immutable after load — no one mutat
 |-------|------|---------|-------------|
 | `node_name` | `str` | `""` | Auto-generates a UUID if empty at load time |
 | `bind_addr` | `str` | `"0.0.0.0:7946"` | Gossip bind address |
+| `task_port` | `int` | `7947` | Cluster TCP endpoint for STEAL/forwarding (Phase 5). Separate from the gossip port — memberlist owns 7946's TCP *and* UDP. |
 | `advertise_addr` | `str` | `""` | Routable address peers use to reach this node |
 | `seeds` | `list[str]` | `[]` | Bootstrap peer addresses for cluster join |
 | `mdns` | `bool` | `True` | Enable mDNS for zero-config local discovery |
@@ -207,7 +209,7 @@ All config classes are frozen dataclasses. Immutable after load — no one mutat
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `count` | `int` | `4` | Number of Python worker processes to spawn |
+| `count` | `int` | `4` | Number of Python worker processes to spawn. `0` is valid — a submit-only node (also used by tests that need tasks to stay queued, e.g. Phase 4 `test_cancel_unleased`). |
 | `labels` | `dict[str, str]` | `{}` | Node labels used for routing |
 | `resources` | `ResourceConfig` | defaults | Resource caps |
 
@@ -262,13 +264,20 @@ Top-level config object. This is what both the SDK and (indirectly via YAML) the
 | `workers` | `WorkerConfig` |
 | `routing` | `RoutingConfig` |
 | `result_delivery` | `ResultDeliveryConfig` |
+| `metrics` | `MetricsConfig` |
+
+#### `MetricsConfig`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `listen_addr` | `str` | `""` | Optional Prometheus `/metrics` listener, added in Phase 7. Empty disables metrics. |
 
 | Method | Signature | Responsibility |
 |--------|-----------|----------------|
 | `load` | `classmethod(path: str \| None = None) -> Config` | If path given, load that file. Otherwise call `_find_config_file()`. Parse YAML, call `_from_dict()`, call `_validate()`. Raise `ConfigError` on any failure. |
 | `_from_dict` | `classmethod(data: dict) -> Config` | Map raw parsed dict to dataclass hierarchy. Use `.get()` with defaults everywhere — never KeyError. |
 | `_find_config_file` | `staticmethod() -> str \| None` | Walk `SEARCH_PATHS = ["./taskwire.yaml", "~/.taskwire/taskwire.yaml", "/etc/taskwire/taskwire.yaml"]`. Return first existing path or None. |
-| `_validate` | `(self) -> None` | Raise `ConfigError` if `result_delivery.mode` is not "direct" or "queue". Raise if `workers.count < 1`. Auto-fill `cluster.node_name` with `uuid.uuid4().hex` if empty. |
+| `_validate` | `(self) -> None` | Raise `ConfigError` if: `result_delivery.mode` not in `{"direct", "queue"}`; `queue.persistence` not in `{"none", "wal"}`; `workers.count < 0` (0 is valid — submit-only node); `queue.max_attempts < 1`; `cluster.encryption_key` set but not base64 decoding to exactly 32 bytes; `result_delivery.mode == "queue"` with empty `result_delivery.queue.brokers`. Auto-fill `cluster.node_name` with `uuid.uuid4().hex` if empty. |
 
 **Pattern:** Factory Method (`Config.load` hides file discovery, parsing, and validation). Value Object (frozen dataclasses, data-only, no behaviour). Fail-fast (`_validate` on load, not at use time).
 
@@ -294,10 +303,15 @@ Cancel    = 0x06
 Complete  = 0x07
 Steal     = 0x08
 Ack       = 0x09
+Status    = 0x0A
 
 ProtocolVersion = 0x01
 HeaderSize      = 23   // 1 ver + 1 type + 16 task_id + 1 flags + 4 pay_len
 MaxFrameSize    = 16 << 20
+
+FlagError      = 0x01
+FlagIdempotent = 0x02
+FlagForwarded  = 0x04
 ```
 
 #### `Frame` struct
@@ -306,7 +320,7 @@ MaxFrameSize    = 16 << 20
 |-------|------|-------------|
 | `Type` | `MessageType` | Message type |
 | `TaskID` | `[16]byte` | UUID raw bytes |
-| `Flags` | `byte` | Bit field (0x01 = error, 0x02 = idempotent) |
+| `Flags` | `byte` | Bit field (`FlagError`, `FlagIdempotent`, `FlagForwarded`) |
 | `Payload` | `[]byte` | Message body |
 
 #### Functions
@@ -329,8 +343,9 @@ Mirror the Python dataclass hierarchy exactly — same field names in snake_case
 
 | Struct | Fields |
 |--------|--------|
-| `Config` | `Cluster ClusterConfig`, `Socket string`, `AdvertiseAddr string`, `Workers WorkerConfig`, `Routing RoutingConfig`, `ResultDelivery ResultDeliveryConfig` |
-| `ClusterConfig` | `NodeName, BindAddr, AdvertiseAddr string`, `Seeds []string`, `MDNS bool` |
+| `Config` | `Cluster ClusterConfig`, `Socket string`, `SocketGroup string`, `AdvertiseAddr string`, `Queue QueueConfig`, `Workers WorkerConfig`, `Routing RoutingConfig`, `ResultDelivery ResultDeliveryConfig`, `Metrics MetricsConfig` |
+| `ClusterConfig` | `NodeName, BindAddr, AdvertiseAddr string`, `TaskPort int`, `Seeds []string`, `MDNS bool`, `EncryptionKey string` |
+| `QueueConfig` | `Persistence string`, `WALDir string`, `MaxAttempts int`, `MaxFrameSizeMB int` |
 | `ResourceConfig` | `MaxMemoryMB, MaxCPUPercent int` |
 | `WorkerConfig` | `Count int`, `Labels map[string]string`, `Resources ResourceConfig` |
 | `DirectDeliveryConfig` | `MaxRetries int`, `RetryBackoffMS int`, `RetryStrategy string` |
@@ -338,6 +353,7 @@ Mirror the Python dataclass hierarchy exactly — same field names in snake_case
 | `ResultDeliveryConfig` | `Mode string`, `Direct DirectDeliveryConfig`, `Queue QueueDeliveryConfig` |
 | `RoutingRule` | `MatchLabel string`, `Prefer map[string]string` |
 | `RoutingConfig` | `Rules []RoutingRule` |
+| `MetricsConfig` | `ListenAddr string` |
 
 #### Functions
 
@@ -345,14 +361,14 @@ Mirror the Python dataclass hierarchy exactly — same field names in snake_case
 |----------|-----------|----------------|
 | `Load` | `(path string) (*Config, error)` | Read file at path, unmarshal YAML into Config struct, call `applyDefaults`, call `validate`, return. |
 | `FindConfigFile` | `() (string, error)` | Walk standard paths (same as Python SEARCH_PATHS). Return first found or `("", ErrNotFound)`. |
-| `applyDefaults` | `(c *Config)` | Set `NodeName` to `uuid.New().String()` if empty. Set `Workers.Count` to 4 if zero. Set `Socket` to `/var/run/taskwire/agent.sock` if empty. |
-| `validate` | `(c *Config) error` | Return error if `ResultDelivery.Mode` is not "direct" or "queue". Return error if `Workers.Count < 1`. |
+| `applyDefaults` | `(c *Config)` | Set `NodeName` to `uuid.New().String()` if empty. Set `Socket` to `/var/run/taskwire/agent.sock` and `SocketGroup` to `"taskwire"` if empty. Set `Cluster.TaskPort` to 7947, `Queue.Persistence` to `"none"`, `Queue.MaxAttempts` to 5, `Queue.MaxFrameSizeMB` to 16 if zero-valued. **Worker count:** YAML `count: 0` is meaningful (submit-only node), so `Workers.Count` cannot default via zero-check — use a pointer or "key absent" detection to default to 4 only when the key is missing. |
+| `validate` | `(c *Config) error` | Mirror the Python `_validate` exactly: same rules, same failure cases (mode enum, persistence enum, `Workers.Count < 0`, `MaxAttempts < 1`, encryption-key length, queue mode without `ResultDelivery.Queue.Brokers`). The two validators are tested against the same YAML fixtures. |
 
 ---
 
 ## Tests
 
-### Python (`sdk/tests/unit/test_protocol.py`)
+### Python (`python/tests/unit/test_protocol.py`)
 
 | Test | Asserts |
 |------|---------|
@@ -365,15 +381,18 @@ Mirror the Python dataclass hierarchy exactly — same field names in snake_case
 | `test_oversized_frame_rejected` | Header claiming `pay_len` > MAX_FRAME_SIZE → `ProtocolError`, no allocation of the claimed size |
 | `test_native_python_parity` | (skipped if `_native` not built) every frame encoded by the Rust codec decodes identically in pure Python and vice versa — byte-for-byte equality of `encode` output |
 
-### Python (`sdk/tests/unit/test_config.py`)
+### Python (`python/tests/unit/test_config.py`)
 
 | Test | Asserts |
 |------|---------|
-| `test_load_valid_file` | All fields parsed correctly from example YAML |
+| `test_load_valid_file` | All fields parsed correctly from `taskwire.example.yaml` at the repo root — that file is the schema contract and must contain every field (including `socket_group`, `cluster.encryption_key`, `cluster.task_port`, and the full `queue:` section) |
 | `test_load_missing_file_uses_defaults` | `Config.load("/nonexistent.yaml")` raises `ConfigError` |
 | `test_load_no_path_uses_defaults` | `Config.load()` with no config file in SEARCH_PATHS returns Config with defaults |
 | `test_invalid_delivery_mode` | `mode: "ftp"` → `ConfigError` |
 | `test_node_name_autofilled` | Empty `node_name` → filled with UUID string after load |
+| `test_workers_zero_valid` | `workers.count: 0` loads without error (submit-only node) |
+| `test_bad_encryption_key` | `encryption_key: "dG9vc2hvcnQ="` (not 32 bytes decoded) → `ConfigError` |
+| `test_queue_mode_requires_brokers` | `result_delivery.mode: "queue"` with empty `result_delivery.queue.brokers` → `ConfigError` |
 
 ### Go (`agent/pkg/protocol/protocol_test.go`)
 
@@ -392,7 +411,7 @@ Mirror the Python dataclass hierarchy exactly — same field names in snake_case
 | `TestApplyDefaults` | Empty config gets correct defaults |
 | `TestValidateInvalidMode` | Returns error for unknown delivery mode |
 
-### Cross-language (`sdk/tests/integration/test_protocol_compat.py`)
+### Cross-language (`python/tests/integration/test_protocol_compat.py`)
 
 | Test | Asserts |
 |------|---------|

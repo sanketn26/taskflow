@@ -4,6 +4,8 @@
 
 Developer-facing API. `@task`, `Runtime`, `TaskFuture`. The developer writes a decorated function, submits it via a Runtime, and awaits a Future. They never touch frames, sockets, or config.
 
+**This phase is the MVP gate**: when its acceptance tests pass, a single-node `pip install` + `@task` + `future.result()` works end-to-end — tag it `0.0.1` and demo it (see architecture.md "Implementation Order"). Phases 5–6 widen the product; they do not block demoability.
+
 ## Testable Outcome
 
 - `@task` wraps a function; calling it directly raises `RuntimeError`
@@ -12,6 +14,7 @@ Developer-facing API. `@task`, `Runtime`, `TaskFuture`. The developer writes a d
 - `runtime.submit(my_task, arg)` returns `TaskFuture`
 - `future.result()` blocks until result arrives and returns correct value
 - `future.result()` raises `TaskExecutionError` if task raised on the worker
+- `future.result()` raises `DeliveryFailedError` if the worker exhausted delivery retries (via the sidecar's COMPLETE relay — the future fails fast instead of hanging)
 - `runtime.map(my_task, [1, 2, 3])` returns `list[TaskFuture]`, all resolve correctly
 - `with Runtime() as rt:` cleans up on exit
 
@@ -20,21 +23,21 @@ Developer-facing API. `@task`, `Runtime`, `TaskFuture`. The developer writes a d
 ## Files
 
 ```
-sdk/taskwire/task.py
-sdk/taskwire/future.py
-sdk/taskwire/runtime.py
-sdk/taskwire/__init__.py
+python/taskwire/task.py
+python/taskwire/future.py
+python/taskwire/runtime.py
+python/taskwire/__init__.py
 native/src/result_server.rs            (Rust ResultServer — preferred when built)
-sdk/tests/unit/test_task.py
-sdk/tests/unit/test_future.py
-sdk/tests/integration/test_sdk_e2e.py
+python/tests/unit/test_task.py
+python/tests/unit/test_future.py
+python/tests/integration/test_sdk_e2e.py
 ```
 
 ---
 
 ## Python
 
-### `sdk/taskwire/task.py`
+### `python/taskwire/task.py`
 
 #### `TaskDefinition`
 
@@ -74,7 +77,7 @@ Implementation: check if `func is not None` (bare decorator) or `func is None` (
 
 ---
 
-### `sdk/taskwire/future.py`
+### `python/taskwire/future.py`
 
 #### `TaskFuture`
 
@@ -92,7 +95,7 @@ Result handle returned by `Runtime.submit`. Thread-safe — `_set_result` and `_
 | `__init__` | `(task_id: bytes)` | Store task_id, create Event, set fields to None |
 | `result` | `(timeout: float \| None = None) -> Any` | `self._event.wait(timeout)`. If not set after wait: raise `TimeoutError(f"Task {task_id.hex()[:8]} timed out")`. If `_exception` is set: `raise self._exception`. Return `self._result`. |
 | `done` | `() -> bool` | Return `self._event.is_set()` |
-| `cancel` | `() -> bool` | Delegate to `Runtime._cancel(task_id)`: send CANCEL (0x06) frame, read ACK. If ACK flags=0x00 (sidecar removed it from the queue before any worker pulled it): resolve self with `CancelledError`, return `True`. If flags=0x01 (already leased): return `False` — the task will run to completion; cancellation is best-effort, exactly like `concurrent.futures`. |
+| `cancel` | `() -> bool` | Delegate to `Runtime._cancel(task_id)`: send CANCEL (0x06) frame and wait for the Runtime reader thread to process the ACK. If ACK flags=0x00 (sidecar removed it from the queue before any worker pulled it): resolve self with `CancelledError`, return `True`. If flags=0x01 (already leased): return `False` — the task will run to completion; cancellation is best-effort, exactly like `concurrent.futures`. |
 | `exception` | `() -> BaseException \| None` | If not `done()`: raise `RuntimeError("Future is not done yet")`. Return `self._exception`. |
 | `_set_result` | `(value: Any) -> None` | Store `_result = value`, `_event.set()`. Called only by Runtime. |
 | `_set_exception` | `(exc: BaseException) -> None` | Store `_exception = exc`, `_event.set()`. Called only by Runtime. |
@@ -101,7 +104,7 @@ The API deliberately mirrors `concurrent.futures.Future` (`result(timeout)`, `do
 
 ---
 
-### `sdk/taskwire/runtime.py`
+### `python/taskwire/runtime.py`
 
 The Facade. Hides `SidecarClient`, `ResultServer`, frame encoding, and config entirely. Developer interacts with this class only.
 
@@ -113,12 +116,15 @@ The Facade. Hides `SidecarClient`, `ResultServer`, frame encoding, and config en
 | `_sidecar` | `SidecarClient` | Connection to local agent Unix socket |
 | `_result_server` | `ResultServer` | TCP listener; receives direct result frames from workers |
 | `_pending` | `dict[bytes, TaskFuture]` | Maps `task_id → TaskFuture`; resolved by `_on_result` |
+| `_submit_acks` | `dict[bytes, threading.Event]` | Per-submit ACK waiters. `submit()` returns only after the reader thread sees ACK `{task_id}`. |
+| `_cancel_results` | `dict[bytes, CancelWaiter]` | Per-cancel ACK waiters. `CancelWaiter` holds an Event plus a mutable `cancelled: bool \| None`; the reader thread fills `cancelled` from the ACK flags. |
 | `_lock` | `threading.Lock` | Protects `_pending` dict (Python 3.13 free-threaded safe) |
+| `_reader` | `threading.Thread` | Daemon thread looping `FrameCodec.read_frame` on the sidecar socket. The sidecar connection is message-driven: this is the *only* place that reads it. Dispatch: ACK `{task_id}` → set the matching submit or cancel event; COMPLETE `{task_id, status: "delivery_failed", reason}` → pop the pending future, `_set_exception(DeliveryFailedError(task_id, reason))`. Exits on socket close. |
 
 | Method | Signature | Responsibility |
 |--------|-----------|----------------|
-| `__init__` | `(config: str \| None = None)` | `Config.load(config)`. Create `SidecarClient` — raises `SidecarNotRunning` immediately if agent unreachable (fail fast). Create `ResultServer(advertise_addr=config.advertise_addr, on_result=self._on_result)`. Initialise `_pending = {}`. |
-| `submit` | `(task: TaskDefinition, *args, **kwargs) -> TaskFuture` | Generate `task_id = uuid.uuid4().bytes`. Build `future = TaskFuture(task_id)`. Under `_lock`, store `_pending[task_id] = future`. Call `_sidecar.submit(task_id, _build_payload(task, args, kwargs))`. Return `future`. |
+| `__init__` | `(config: str \| None = None)` | `Config.load(config)`. Create `SidecarClient` — raises `SidecarNotRunning` immediately if agent unreachable (fail fast). Create `ResultServer(advertise_addr=config.advertise_addr, on_result=self._on_result)`. Initialise `_pending`, `_submit_acks`, and `_cancel_results`. Start `_reader` only after all maps exist. |
+| `submit` | `(task: TaskDefinition, *args, **kwargs) -> TaskFuture` | Generate `task_id = uuid.uuid4().bytes`. Build `future = TaskFuture(task_id)` and `ack = threading.Event()`. Under `_lock`, store `_pending[task_id] = future` and `_submit_acks[task_id] = ack`. Call `_sidecar.submit(task_id, _build_payload(task, args, kwargs))` and wait (5s timeout) for the reader thread to signal ACK — the ACK is the durability boundary, so `submit` returning means the sidecar owns the task. On timeout or send failure: remove both maps and raise `SidecarNotRunning`. Return `future`. |
 | `map` | `(task: TaskDefinition, items: Iterable[Any], **kwargs) -> list[TaskFuture]` | Call `submit(task, item, **kwargs)` for each item. Return list of futures. Also accepts a `BatchSubmission` as first arg. |
 | `shutdown` | `(wait: bool = True) -> None` | If `wait=True`: call `f.result(timeout=30)` for all pending futures (best-effort drain). Stop `_result_server`. Close `_sidecar`. |
 | `__enter__` | `() -> Runtime` | Return `self` |
@@ -130,7 +136,7 @@ Additions to the table above:
 
 | Method | Signature | Responsibility |
 |--------|-----------|----------------|
-| `_cancel` | `(task_id: bytes) -> bool` | Send `Frame(CANCEL, task_id, 0, b"")` via `_sidecar`, read ACK. Used by `TaskFuture.cancel()`. |
+| `_cancel` | `(task_id: bytes) -> bool` | Register a cancel waiter, send `Frame(CANCEL, task_id, 0, b"")` via `_sidecar`, and wait for the reader thread to process the ACK. ACK flag `0x00` means cancelled; `0x01` means too late. Used by `TaskFuture.cancel()`. No method except `_reader` reads from the sidecar socket. |
 
 **`_on_result` hardening:** `cloudpickle.loads(result_bytes)` can itself raise (missing class on the client side, version skew). Wrap it; on failure resolve the future with `TaskExecutionError(task_id, "result deserialisation failed: ...")` rather than letting the exception kill the result-server callback thread — a dead callback thread means every subsequent future hangs forever, which is the worst possible failure mode.
 
@@ -162,7 +168,7 @@ Implementation notes:
 
 ---
 
-### `sdk/taskwire/__init__.py`
+### `python/taskwire/__init__.py`
 
 Public surface area — only export what developers need.
 
@@ -190,7 +196,7 @@ __all__ = [
 
 ## Tests
 
-### `sdk/tests/unit/test_task.py`
+### `python/tests/unit/test_task.py`
 
 No sidecar needed.
 
@@ -203,7 +209,7 @@ No sidecar needed.
 | `test_map_returns_batch` | `my_task.map([1,2,3])` returns `BatchSubmission`, no execution |
 | `test_functools_wraps` | `my_task.__name__` == original function name |
 
-### `sdk/tests/unit/test_future.py`
+### `python/tests/unit/test_future.py`
 
 No sidecar needed.
 
@@ -215,7 +221,7 @@ No sidecar needed.
 | `test_done_before_after` | `future.done()` is False before set, True after |
 | `test_concurrent_set_and_get` | Thread A calls `result()`, Thread B calls `_set_result(99)` 50ms later — Thread A unblocks with `99`. (Python 3.13 free-threaded: no GIL assists here, Event sync is essential) |
 
-### `sdk/tests/integration/test_sdk_e2e.py`
+### `python/tests/integration/test_sdk_e2e.py`
 
 Requires running `taskwire-agent`.
 

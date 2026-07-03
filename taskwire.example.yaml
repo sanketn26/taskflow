@@ -5,15 +5,24 @@
 cluster:
   node_name: ""                    # auto-generated UUID if empty
   bind_addr: "0.0.0.0:7946"       # gossip protocol bind address
-  advertise_addr: ""               # routable address peers use to reach this node
+  advertise_addr: ""               # routable host:port peers use for gossip
+  task_port: 7947                  # cluster TCP endpoint for STEAL/forwarding
   seeds: []                        # ["10.0.1.1:7946", "10.0.1.2:7946"]
   mdns: true                       # zero-config discovery on local networks
+  encryption_key: ""               # base64 32-byte key for gossip encryption + cluster TCP auth
 
 # Unix socket path — Python SDK connects here
 socket: "/var/run/taskwire/agent.sock"
+socket_group: "taskwire"           # socket chmod 0660, chown root:taskwire when possible
 
 # Routable IP for direct result delivery callbacks (workers connect back to this)
 advertise_addr: ""                 # set to this machine's external IP
+
+queue:
+  persistence: "none"              # "none" or "wal"
+  wal_dir: "/var/lib/taskwire/wal"
+  max_attempts: 5                  # lease-expiry requeues before dead-letter
+  max_frame_size_mb: 16
 
 workers:
   count: 4                         # Python worker processes to spawn
@@ -43,3 +52,6 @@ result_delivery:
     type: "kafka"
     brokers: []                    # ["kafka:9092"]
     topic: "taskwire-results"
+
+metrics:
+  listen_addr: ""                  # e.g. "127.0.0.1:9464"; empty disables /metrics

@@ -40,7 +40,8 @@ Broadcast to all peers via gossip metadata. Represents one node's current state.
 | Field | Type | Description |
 |-------|------|-------------|
 | `Name` | `string` | Unique node name (from config, or auto UUID) |
-| `Addr` | `string` | Routable `host:port` for the gossip protocol |
+| `GossipAddr` | `string` | Routable `host:port` for the memberlist gossip protocol (`cluster.advertise_addr` or `cluster.bind_addr`) |
+| `TaskAddr` | `string` | Routable `host:task_port` for Taskwire cluster control traffic (STEAL, forwarded SUBMIT, COMPLETE). This is separate because memberlist owns the gossip TCP/UDP port. |
 | `SocketPath` | `string` | Unix socket path (local only — not broadcast; only used by local manager) |
 | `Labels` | `map[string]string` | Node labels from `workers.labels` in config |
 | `QueueDepth` | `int` | Current local queue depth; updated periodically and broadcast via gossip |
@@ -75,7 +76,7 @@ Broadcast to all peers via gossip metadata. Represents one node's current state.
 
 | Method | Responsibility |
 |--------|----------------|
-| `NewGossipCluster(cfg *ClusterConfig) (*GossipCluster, error)` | Build `memberlist.DefaultLANConfig()`. Set `Name`, `BindAddr`, `AdvertiseAddr` from config. Set `Events` delegate to self. Set `Delegate` for metadata broadcast (NodeInfo JSON). `memberlist.Create(config)`. |
+| `NewGossipCluster(cfg *ClusterConfig) (*GossipCluster, error)` | Build `memberlist.DefaultLANConfig()`. Set `Name`, gossip `BindAddr`, and gossip `AdvertiseAddr` from config. Derive `TaskAddr` from the advertised host plus `cluster.task_port`. Set `Events` delegate to self. Set `Delegate` for metadata broadcast (NodeInfo msgpack). `memberlist.Create(config)`. |
 | `Join(seeds []string) error` | `list.Join(seeds)`. If `cfg.MDNS`, start `browseMDNS()` goroutine to find peers on local network. |
 | `Members() []NodeInfo` | RLock, copy map values to slice, RUnlock. Return slice. |
 | `UpdateQueueDepth(depth int)` | Lock, update `localNode.QueueDepth`, unlock. Call `list.UpdateNode(timeout)` to re-broadcast metadata. |
@@ -102,7 +103,7 @@ Routes a task to the best node. Keeps routing logic separate from cluster member
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `Route` | `(task *queue.Task, members []cluster.NodeInfo) (addr string, local bool)` | Return `("", true)` if task should run locally. Return `(addr, false)` if it should be forwarded to `addr`. |
+| `Route` | `(task *queue.Task, members []cluster.NodeInfo) (taskAddr string, local bool)` | Return `("", true)` if task should run locally. Return `(taskAddr, false)` if it should be forwarded to a peer's cluster TCP endpoint. |
 
 #### `RoutingRule` struct
 
@@ -120,7 +121,7 @@ Routes a task to the best node. Keeps routing logic separate from cluster member
 | Method | Responsibility |
 |--------|----------------|
 | `NewLabelRouter(rules []RoutingRule) *LabelRouter` | Store rules |
-| `Route(task, members) (string, bool)` | Find first rule where `rule.MatchLabel == task.Label`. Filter `members` to those whose Labels contain all `rule.Prefer` key-value pairs. From matching members, pick one with lowest `QueueDepth`. If no matching members or no rule match: return `("", true)` (run locally). If best match is local node: return `("", true)`. Else return `(member.Addr, false)`. |
+| `Route(task, members) (string, bool)` | Find first rule where `rule.MatchLabel == task.Label`. Filter `members` to those whose Labels contain all `rule.Prefer` key-value pairs. From matching members, pick one with lowest `QueueDepth`. If no matching members or no rule match: return `("", true)` (run locally). If best match is local node: return `("", true)`. Else return `(member.TaskAddr, false)`. |
 
 ---
 
@@ -147,7 +148,7 @@ Runs as a background goroutine within the agent. Periodically checks if the loca
 | `NewWorkStealer(cluster Cluster, queue Queuer) *WorkStealer` | Initialise |
 | `Start()` | Start `steal()` goroutine |
 | `Stop()` | Close `stopCh` |
-| `steal()` (goroutine) | Every 500ms: if `queue.Len() == 0`, find the member with highest `QueueDepth`. Connect to their `ipc.Server` TCP endpoint (not Unix socket — cluster communication uses TCP), send STEAL frame requesting up to 5 tasks. On response, push received tasks into local queue. |
+| `steal()` (goroutine) | Every 500ms: if `queue.Len() == 0`, find the member with highest `QueueDepth`. Connect to their `TaskAddr` TCP endpoint (not Unix socket and not the gossip port), send STEAL frame requesting up to 5 tasks. On response, push received tasks into local queue. |
 
 ---
 
@@ -159,11 +160,11 @@ Add STEAL message handling to `server.go`:
 |--------|----------------|
 | `handleSteal(conn net.Conn, f *protocol.Frame)` | Deserialise `{n}` from payload. Call `queue.StealN(n)`. Encode each stolen task as a TASK frame (without lease — stolen tasks get a fresh lease when a worker pulls them). Send all frames. Send ACK. |
 
-Cluster TCP endpoint — same `Server` but listening on TCP (`cfg.BindAddr`) in addition to the Unix socket. Add to `Server`:
+Cluster TCP endpoint — same protocol, separate listener. It must listen on `host:cluster.task_port`, not `cluster.bind_addr`, because memberlist already owns the gossip port. Add to `Server`:
 
 | Method | Responsibility |
 |--------|----------------|
-| `StartCluster(bindAddr string) error` | `net.Listen("tcp", bindAddr)`. Start accept loop for cluster connections. Run the HMAC handshake (see above) before entering `handleConn`. Same `handleConn` dispatch — STEAL frames arrive here. |
+| `StartCluster(taskAddr string) error` | `net.Listen("tcp", taskAddr)`. Start accept loop for cluster connections. Run the HMAC handshake (see above) before entering the cluster dispatch loop. Dispatch only cluster-safe frames: `STEAL`, forwarded `SUBMIT` with flag `0x04`, and terminal `COMPLETE`. Never dispatch `STATUS` on this listener. |
 
 ---
 
@@ -172,7 +173,7 @@ Cluster TCP endpoint — same `Server` but listening on TCP (`cfg.BindAddr`) in 
 The testable outcome "kill node 2 while it holds a lease → task re-queued on another node" does **not** fall out of forwarding alone: once a task is pushed to node 2's queue and node 2 dies, nothing elsewhere knows the task existed. Forwarding must keep ownership at the origin:
 
 - When `Route` returns a remote addr, the origin does **not** delete the task. It moves it to a `forwarded` map (`task_id → {peer, deadline}`) and sends a copy.
-- The remote node sends COMPLETE (0x07) to the origin over the cluster connection when the task's lease is released after successful delivery. Origin then drops its shadow copy (and its WAL record).
+- The remote node sends terminal COMPLETE (0x07, status `"ok"` or `"delivery_failed"`) to the origin over the cluster connection when the task's lease is released. Origin then drops its shadow copy (and its WAL record). For `delivery_failed`, the origin also relays COMPLETE to the submitting Runtime if it owns that connection.
 - On `NotifyLeave`/failure-detection for a peer, the origin re-queues every entry in `forwarded` belonging to that peer. Combined with at-least-once + idempotency, duplicate execution is possible and documented; lost tasks are not.
 - Same mechanism covers STEAL: the *stolen-from* node keeps the shadow until COMPLETE from the thief.
 
@@ -222,10 +223,10 @@ Build order:
 
 Gotchas:
 
-- **`NodeMeta` size limit**: memberlist caps metadata (512B by default). NodeInfo JSON with many labels can exceed it — use msgpack, keep labels short, and fail loudly at startup if `NodeMeta` would truncate (truncated JSON = nodes silently invisible to routing).
+- **`NodeMeta` size limit**: memberlist caps metadata (512B by default). NodeInfo msgpack with many labels can exceed it — keep labels short, and fail loudly at startup if `NodeMeta` would truncate (truncated metadata = nodes silently invisible to routing).
 - **Queue-depth staleness**: gossip metadata propagates in seconds, not ms. Routing on stale depth is fine (it self-corrects via stealing); just don't oscillate — `UpdateQueueDepth` should be rate-limited (e.g. broadcast only on change > 10% or every 2s).
 - **mDNS in CI**: multicast is usually blocked in containerised CI. The mDNS test must be tagged (`//go:build mdns`) and run locally/nightly, not in the default suite — or it will be deleted in frustration within a month.
-- **Don't forward the forwarded**: a task received via forwarding or STEAL is marked (`flags` bit or envelope field) and is never re-forwarded — without this, two misconfigured nodes ping-pong a task forever.
+- **Don't forward the forwarded**: a task received via forwarding or STEAL is marked with frame flag `0x04` and is never re-forwarded — without this, two misconfigured nodes ping-pong a task forever.
 
 ---
 

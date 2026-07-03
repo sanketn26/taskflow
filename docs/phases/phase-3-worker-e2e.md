@@ -8,9 +8,10 @@ Python worker process that the sidecar spawns, pulls tasks, executes via `cloudp
 
 - Sidecar spawns `N` Python worker processes on startup (from Phase 2 manager)
 - Worker connects to sidecar socket, pulls task, executes `cloudpickle`'d function
-- Worker delivers result directly to the callback address TCP listener
+- Worker delivers result directly to the callback address TCP listener, **then** sends COMPLETE to the sidecar — the lease is released and the task never re-delivered (delivery-before-COMPLETE is the at-least-once ordering rule; see architecture.md)
 - Worker sends heartbeats during execution; sidecar lease stays alive
-- Worker handles execution exceptions: delivers error frame with pickled exception
+- Worker handles execution exceptions: delivers error frame with pickled exception, still COMPLETEs (an exception is a *result* under at-least-once, not a failure to run)
+- Delivery retries exhausted → worker sends COMPLETE with `status: "delivery_failed"` → sidecar dead-letters the task (Phase 2 behaviour)
 - Raw Python test script (no `@task`, no `Runtime`): submit SUBMIT frame → receive RESULT frame at a local TCP listener
 
 ---
@@ -18,22 +19,22 @@ Python worker process that the sidecar spawns, pulls tasks, executes via `cloudp
 ## Files
 
 ```
-sdk/taskwire/ipc/client.py
-sdk/taskwire/ipc/result_server.py
-sdk/taskwire/worker/runner.py
-sdk/taskwire/worker/heartbeat.py       (pure-Python fallback heartbeat)
+python/taskwire/ipc/client.py
+python/taskwire/ipc/result_server.py
+python/taskwire/worker/runner.py
+python/taskwire/worker/heartbeat.py       (pure-Python fallback heartbeat)
 native/src/heartbeat.rs                (Rust heartbeat — GIL-immune, see below)
-sdk/taskwire/protocol/frames.py        (Phase 1, complete)
-sdk/taskwire/protocol/messages.py      (Phase 1, complete)
-sdk/taskwire/exceptions.py             (Phase 1, complete)
-sdk/tests/integration/test_worker_e2e.py
+python/taskwire/protocol/frames.py        (Phase 1, complete)
+python/taskwire/protocol/messages.py      (Phase 1, complete)
+python/taskwire/exceptions.py             (Phase 1, complete)
+python/tests/integration/test_worker_e2e.py
 ```
 
 ---
 
 ## Python
 
-### `sdk/taskwire/ipc/client.py`
+### `python/taskwire/ipc/client.py`
 
 Used by both the worker (to talk to the sidecar) and the SDK Runtime (Phase 4). Responsible only for sending frames over a Unix socket.
 
@@ -49,9 +50,10 @@ Used by both the worker (to talk to the sidecar) and the SDK Runtime (Phase 4). 
 |--------|-----------|----------------|
 | `__init__` | `(socket_path: str)` | Store path, call `_connect()` |
 | `_connect` | `() -> socket.socket` | `socket.socket(AF_UNIX, SOCK_STREAM)`, `.connect(socket_path)`. Raise `SidecarNotRunning` with a clear message ("Is taskwire-agent running?") on `FileNotFoundError` or `ConnectionRefusedError` |
-| `submit` | `(task_id: bytes, payload: bytes) -> None` | Build `Frame(SUBMIT, task_id, 0, payload)`, call `_send` |
+| `submit` | `(task_id: bytes, payload: bytes) -> None` | Build `Frame(SUBMIT, task_id, 0, payload)`, call `_send`. The sidecar replies ACK `{task_id}`; this client does not read it — Phase 3's raw test script reads it inline, and Phase 4's Runtime consumes it on its reader thread. |
 | `pull` | `() -> Frame` | Send `Frame(PULL, zero_id, 0, b"")`, call `_send`. Then call `FrameCodec.read_frame(self._sock)` and return the received frame. |
 | `heartbeat` | `(lease_id: bytes) -> None` | Build `Frame(HEARTBEAT, zero_id, 0, msgpack.dumps({lease_id}))`, call `_send` |
+| `complete` | `(lease_id: bytes, task_id: bytes, status: str, reason: str = "") -> None` | Build `Frame(COMPLETE, task_id, 0, msgpack.dumps({lease_id, task_id, status, reason}))`, call `_send`. Fire-and-forget: if the send fails (agent restarting), the lease simply expires and at-least-once covers it. |
 | `_send` | `(frame: Frame) -> None` | Acquire `_lock`, `self._sock.sendall(FrameCodec.encode(frame))`, release. Thread-safe. |
 | `close` | `() -> None` | `self._sock.close()` |
 
@@ -59,7 +61,7 @@ Used by both the worker (to talk to the sidecar) and the SDK Runtime (Phase 4). 
 
 ---
 
-### `sdk/taskwire/ipc/result_server.py`
+### `python/taskwire/ipc/result_server.py`
 
 Receives results sent directly by workers. Runs in the same Python process as the Runtime (Phase 4) or as a standalone listener in tests.
 
@@ -85,7 +87,7 @@ Receives results sent directly by workers. Runs in the same Python process as th
 
 ---
 
-### `sdk/taskwire/worker/runner.py`
+### `python/taskwire/worker/runner.py`
 
 The worker process. Entry point: `python -m taskwire.worker.runner <socket_path>`. Spawned by `agent/internal/worker/manager.go`.
 
@@ -112,10 +114,10 @@ Represents a task received from the sidecar.
 | Method | Signature | Responsibility |
 |--------|-----------|----------------|
 | `__init__` | `(socket_path: str)` | Create `SidecarClient(socket_path)`, create `_stop_event` |
-| `run` | `() -> None` | Main loop until `_stop_event` set. Call `_pull_task()`. Call `_start_heartbeat(...)` (Rust handle or Python thread). Call `_execute(envelope)`. Stop heartbeat handle. Call `_deliver_result(...)`. Repeat. |
+| `run` | `() -> None` | Main loop until `_stop_event` set. Call `_pull_task()`. Call `_start_heartbeat(...)` (Rust handle or Python thread). Call `_execute(envelope)`. Call `delivered = _deliver_result(...)` **while the heartbeat is still running** (delivery retries can outlast a TTL). Stop heartbeat handle. Call `_client.complete(lease_id, task_id, "ok" if delivered else "delivery_failed", reason)`. Repeat. Order is load-bearing: deliver → COMPLETE. Crash between them ⇒ lease expiry ⇒ re-run ⇒ duplicate delivery (allowed); COMPLETE-before-deliver could lose an acknowledged result (never allowed). |
 | `_pull_task` | `() -> TaskEnvelope` | Call `_client.pull()`. If ACK with empty payload (no work available), sleep for backoff (100ms), retry. If TASK frame, decode msgpack payload into `TaskEnvelope`. |
 | `_execute` | `(envelope: TaskEnvelope) -> tuple[bytes, bool]` | `cloudpickle.loads(envelope.payload)` to get `{func, args, kwargs}`. Call `func(*args, **kwargs)`. On success: return `(cloudpickle.dumps(result), False)`. On any exception `e`: return `(cloudpickle.dumps(e), True)`. Never re-raise — exceptions are data here. **Two traps:** (1) the *result or exception itself* may fail to pickle — wrap the `dumps` in try/except and fall back to `cloudpickle.dumps(TaskExecutionError(task_id, repr(original)))`, otherwise the worker crashes and the task replays forever; (2) catch `BaseException`, not `Exception` — a `KeyboardInterrupt`/`SystemExit` raised inside task code must not silently kill the worker without delivering an error frame. |
-| `_deliver_result` | `(task_id: bytes, result: bytes, error: bool, callback_addr: str) -> None` | Parse `callback_addr` into host:port. Open TCP socket, connect, send RESULT frame (`flags=0x01` if error). If connection fails: retry up to `config.direct.max_retries` with exponential backoff (base: `retry_backoff_ms`). If all retries fail: log warning and return — worker moves on. The sidecar side handles `DeliveryFailedError` accounting. |
+| `_deliver_result` | `(task_id: bytes, result: bytes, error: bool, callback_addr: str) -> bool` | Parse `callback_addr` into host:port. Open TCP socket, connect, send RESULT frame (`flags=0x01` if error). If connection fails: retry up to `config.direct.max_retries` with exponential backoff (base: `retry_backoff_ms`). Return `True` on success. If all retries fail: log warning, return `False` — the caller reports it via COMPLETE `status: "delivery_failed"`, which the sidecar dead-letters and (Phase 4) relays to the submitting app as `DeliveryFailedError`. |
 | `_start_heartbeat` | `(lease_id: bytes, ttl_ms: int) -> HeartbeatHandle` | Prefer `taskwire._native.HeartbeatHandle` (Rust); fall back to the Python `_heartbeat_loop` thread. See "Heartbeat and the GIL" below. |
 | `stop` | `() -> None` | Set `_stop_event` |
 
@@ -165,7 +167,7 @@ if __name__ == "__main__":
         runner.stop()
 ```
 
-**Pattern:** The heartbeat loop is a classic concurrent "keep-alive" pattern. `stop_event` is the clean shutdown signal — no daemon thread magic needed. Thread per task is fine with Python 3.13 free-threaded.
+**Pattern:** The heartbeat loop is a classic concurrent "keep-alive" pattern. `stop_event` is the clean shutdown signal — no daemon thread magic needed.
 
 ---
 
@@ -185,7 +187,8 @@ TASK.payload = msgpack({
     "task_bytes":     <same cloudpickle bytes from SUBMIT>,
     "lease_id":       <16 bytes>,
     "ttl_ms":         30000,
-    "callback_addr":  "10.0.1.5:51234"
+    "callback_addr":  "10.0.1.5:51234",
+    "delivery_mode":  "direct"        # "queue" from Phase 6; workers treat a missing key as "direct"
 })
 ```
 
@@ -195,7 +198,7 @@ The Go sidecar passes `task_bytes` through opaquely — it never deserialises th
 
 ## Tests
 
-### `sdk/tests/integration/test_worker_e2e.py`
+### `python/tests/integration/test_worker_e2e.py`
 
 Requires a running `taskwire-agent` (started in test setup via subprocess).
 
@@ -208,6 +211,8 @@ Requires a running `taskwire-agent` (started in test setup via subprocess).
 | `test_heartbeat_survives_gil_hog` | (skipped without `_native`) Submit a function that runs a tight CPU loop holding the GIL for 3s, with 1s TTL. Rust heartbeat keeps the lease alive — result arrives exactly once, task is never re-queued. This is *the* test that justifies the Rust extension. |
 | `test_unpicklable_result` | Task returns an open file handle (unpicklable). Error frame arrives with a `TaskExecutionError`, worker stays alive and processes the next task. |
 | `test_worker_respawn` | Kill worker process by PID. Within 5s, submit a new task and verify it completes. (Tests manager.monitor respawn) |
+| `test_complete_prevents_redelivery` | Submit a fast task with a short TTL (1s). Result arrives; wait 3×TTL; STATUS shows zero active leases and zero queued — the COMPLETE released the lease, no ghost re-run. |
+| `test_delivery_failure_dead_letters` | Submit with a callback_addr that refuses connections and `max_retries: 2`. After backoff window: STATUS shows deadletter_count == 1; task is not re-queued; worker processes the next task normally. |
 
 ---
 
@@ -234,6 +239,6 @@ Gotchas:
 | Pattern | Where | Why |
 |---------|-------|-----|
 | Strategy (later, Phase 6) | `_deliver_result` | Direct delivery today; Kafka delivery later. Same interface. |
-| Thread-per-connection | `ResultServer._serve` | Python 3.13 free-threaded — truly parallel result handling |
+| Thread-per-connection | `ResultServer._serve` | Simple, correct on all builds; the Rust version (Phase 4) makes it GIL-free, free-threaded builds make it truly parallel |
 | Separation of concerns | `_execute` never raises | Exceptions are return values here, not control flow |
 | Heartbeat keep-alive | `_heartbeat_loop` | Standard distributed systems pattern for lease renewal |

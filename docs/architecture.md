@@ -88,7 +88,9 @@ Python App                 Go Sidecar              Python Worker
     │◄══════════════════════════════════════════════════│
     │   RESULT (direct TCP)    │                        │
     │   task_id + result_bytes │                        │
-    │                          │                        │
+    │                          │◄─── COMPLETE ──────────│
+    │                          │  release lease,        │
+    │                          │  delete WAL record     │
     │  future.result() returns │                        │
 ```
 
@@ -102,7 +104,8 @@ Python App         Go Sidecar         Python Worker         Kafka
     │                  │──── TASK ─────────►│                  │
     │                  │                    │── execute         │
     │                  │                    │── publish ───────►│
-    │                  │                    │   result_bytes    │
+    │                  │◄── COMPLETE ───────│   result_bytes    │
+    │                  │  (after flush())   │                   │
     │◄═══════════════════════════════════════════════════════   │
     │  Runtime Kafka consumer resolves Future                   │
 ```
@@ -140,7 +143,7 @@ All communication uses the same binary frame format:
 | ver | Protocol version, currently `0x01`. Receivers reject frames with an unknown version with `ProtocolError` — this is what lets v0.2 change the wire format without silent corruption. |
 | type | MessageType enum (1 byte) |
 | task_id | UUID as raw bytes (16 bytes) |
-| flags | Bit field: 0x01 = error, 0x02 = idempotent |
+| flags | Bit field: 0x01 = error, 0x02 = idempotent, 0x04 = forwarded (Phase 5 — task arrived via forward/steal and must never be re-forwarded) |
 | pay_len | Payload length, big-endian uint32. Receivers enforce `max_frame_size` (default 16 MiB) — a corrupt or hostile length prefix must not OOM the agent. |
 | payload | Message-specific data (cloudpickle, msgpack, or empty) |
 
@@ -148,15 +151,20 @@ All communication uses the same binary frame format:
 
 | Value | Name | Direction | Payload |
 |-------|------|-----------|---------|
-| 0x01 | SUBMIT | App → Sidecar | msgpack: {task_bytes, callback_addr, label, idempotent} |
+| 0x01 | SUBMIT | App → Sidecar; Sidecar → Sidecar (Phase 5 forwarding, flags 0x04) | msgpack: {task_bytes, callback_addr, label, idempotent} |
 | 0x02 | PULL | Worker → Sidecar | empty |
-| 0x03 | TASK | Sidecar → Worker | msgpack: {task_bytes, lease_id, ttl, callback_addr} |
+| 0x03 | TASK | Sidecar → Worker | msgpack: {task_bytes, lease_id, ttl_ms, callback_addr, delivery_mode} |
 | 0x04 | HEARTBEAT | Worker → Sidecar | msgpack: {lease_id} |
 | 0x05 | RESULT | Worker → App | cloudpickle result (flags=0x00) or exception (flags=0x01) |
 | 0x06 | CANCEL | App → Sidecar | empty — best-effort: remove task from queue if not yet leased; reply ACK (flags=0x00 cancelled, 0x01 too late) |
-| 0x07 | COMPLETE | Sidecar → App | msgpack: {task_id, status} — lease released |
-| 0x08 | STEAL | Sidecar → Sidecar | msgpack: {n} — request n tasks |
-| 0x09 | ACK | Any → Any | empty |
+| 0x07 | COMPLETE | Worker → Sidecar; Sidecar → Sidecar (Phase 5); Sidecar → App | msgpack: {lease_id, task_id, status, reason} where status is `"ok"` or `"delivery_failed"`. Worker → Sidecar after result delivery: sidecar releases the lease and deletes the WAL record — **this is the only way a task leaves the system successfully**. Phase 5 relays it thief/forwardee → origin to clear the shadow map. On `delivery_failed` the sidecar dead-letters the task and relays COMPLETE to the submitting app's connection so the future raises `DeliveryFailedError` instead of hanging. |
+| 0x08 | STEAL | Sidecar → Sidecar | request: msgpack {n}; response: up to n TASK frames (flags 0x04, no lease_id) followed by ACK with msgpack {count} |
+| 0x09 | ACK | Any → Any | empty, or msgpack {task_id} when acknowledging SUBMIT |
+| 0x0A | STATUS | App/CLI → Sidecar (**local Unix socket only** — never served on the cluster TCP listener) | request: empty; response: msgpack {queue_depth, active_leases: [{task_id, age_ms, attempts}], worker_pids, worker_restarts, deadletter_count, members} — implemented in Phase 2 (the test harness invariants I5/I6 depend on it), surfaced as `taskwire-agent status --json` in Phase 7 |
+
+**SUBMIT is acknowledged.** The sidecar replies with ACK {task_id} after `queue.Push` — and, when `queue.persistence: wal`, only after the WAL write has fsync'd. "Acknowledged" is the exact boundary of the at-least-once guarantee (harness invariant I1): an unACKed submit may be lost; an ACKed one may not.
+
+**COMPLETE ordering rule.** The worker delivers the RESULT *first*, then sends COMPLETE. A worker crash between the two leaves the lease alive → expiry → re-execution → duplicate delivery, which at-least-once permits. The reverse order (COMPLETE before delivery) could lose an acknowledged result forever, which it does not.
 
 ---
 
@@ -192,9 +200,10 @@ cluster:
   node_name: ""                 # auto-generated UUID if empty
   bind_addr: "0.0.0.0:7946"
   advertise_addr: "10.0.1.5:7946"
+  task_port: 7947               # cluster TCP endpoint (STEAL/forwarding) — memberlist owns 7946, so this is a separate listener
   seeds: []
   mdns: true
-  encryption_key: ""            # base64 32-byte key; gossip + STEAL encrypted when set
+  encryption_key: ""            # base64 32-byte key; gossip encrypted + cluster TCP HMAC-authenticated when set
 
 socket: "/var/run/taskwire/agent.sock"
 socket_group: "taskwire"        # socket chmod 0660, chown root:taskwire
@@ -229,7 +238,12 @@ result_delivery:
     type: "kafka"
     brokers: ["kafka:9092"]
     topic: "taskwire-results"
+
+metrics:
+  listen_addr: ""               # e.g. "127.0.0.1:9464" — Prometheus /metrics when set (Phase 7)
 ```
+
+This schema is the contract: `taskwire.example.yaml` (repo root) must contain every field above, because both the Python and Go config parsers are tested against that one file (Phase 1).
 
 ---
 
@@ -248,7 +262,7 @@ taskwire/
 │   │   └── cluster/              gossip cluster (memberlist)
 │   └── pkg/protocol/             shared wire protocol (used by tests too)
 │
-├── sdk/                          Python package (pip install taskwire)
+├── python/                       Python package (pip install taskwire; pyproject.toml at repo root points here)
 │   ├── taskwire/
 │   │   ├── task.py               @task decorator, TaskDefinition, BatchSubmission
 │   │   ├── runtime.py            Runtime — the developer's entry point
@@ -257,6 +271,7 @@ taskwire/
 │   │   ├── exceptions.py         exception hierarchy
 │   │   ├── protocol/             FrameCodec, MessageType (pure-Python fallback)
 │   │   ├── _native.pyi           type stubs for the Rust extension
+│   │   ├── _bin.py               locate bundled agent binary (Phase 7)
 │   │   ├── ipc/                  SidecarClient, ResultServer
 │   │   └── worker/               WorkerRunner (spawned by agent)
 │   └── tests/
@@ -264,7 +279,8 @@ taskwire/
 │       │                         (see docs/testing-harness.md)
 │       ├── unit/                 no sidecar needed
 │       ├── integration/          requires running agent
-│       └── chaos/                fault-injection scenarios, -m chaos
+│       ├── chaos/                fault-injection scenarios, -m chaos
+│       └── benchmark/            Phase 7
 │
 ├── native/                       Rust extension crate (taskwire._native)
 │   ├── Cargo.toml                pyo3 + maturin, abi3-py311
@@ -274,15 +290,20 @@ taskwire/
 │       ├── result_server.rs      threaded TCP result listener (no GIL)
 │       └── heartbeat.rs          lease heartbeat on a native OS thread
 │
-├── config/
-│   └── taskwire.example.yaml
+├── packaging/                    service templates, cross-compile + wheel scripts, Dockerfile (Phase 7)
+│
+├── taskwire.example.yaml         canonical config — both parsers tested against it
 │
 ├── docs/
 │   ├── architecture.md           this file
+│   ├── testing-harness.md        harness + chaos machinery
 │   └── phases/                   per-phase implementation plans
 │
+├── pyproject.toml
 └── Makefile
 ```
+
+Historical note: early drafts used `sdk/` for the Python package; the tree on disk is `python/` and all docs now use that path.
 
 ---
 
@@ -293,7 +314,7 @@ Each phase doc carries its own build-order section; this is the cross-phase view
 | Step | What | Why this position |
 |------|------|-------------------|
 | 1 | Phase 1, pure Python + Go only (skip Rust codec for now) | The wire protocol and config schema are the contract everything else compiles against. The cross-language frame test is the cheapest bug-catcher in the whole project. |
-| 2 | Phase 2 with `NullStore` only (skip `BoltStore` for now) | Working agent: SUBMIT/PULL/lease/expiry against a Go test client. Defer durability — it decorates a queue that must exist first. |
+| 2 | Phase 2 with `NullStore` only (skip `BoltStore` for now) | Working agent: SUBMIT/PULL/COMPLETE/STATUS + lease/expiry against a Go test client. Defer durability — it decorates a queue that must exist first. |
 | 3 | Phase 3 with the *Python* heartbeat fallback | First end-to-end task execution. Use generous TTLs (30s+) so the GIL-starvation issue can't bite while the plumbing stabilises. |
 | 4 | Phase 4, pure Python result server | `@task` / `Runtime` / `TaskFuture` — **milestone: demoable product.** Tag it `0.0.1`, get it in front of a few users; their reaction tells you whether Phases 5–6 are even the right next investment. |
 | 5 | `native/` crate: codec → heartbeat → result server (Phases 1/3/4 Rust sections) | One focused pass now that the contracts are frozen and covered by tests. Heartbeat is the priority (correctness: GIL starvation → spurious lease expiry); codec and result server ride along. Parity + `test_heartbeat_survives_gil_hog` are the acceptance gates. |

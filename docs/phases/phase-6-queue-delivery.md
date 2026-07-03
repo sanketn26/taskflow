@@ -17,19 +17,19 @@ Config-driven result delivery. Add Kafka as a delivery mode alongside direct TCP
 ## Files
 
 ```
-sdk/taskwire/worker/delivery.py           (new — Strategy pattern)
-sdk/taskwire/worker/runner.py             (update: use DeliveryStrategy)
-sdk/taskwire/ipc/result_server.py         (no change)
-sdk/taskwire/ipc/kafka_consumer.py        (new)
-sdk/taskwire/runtime.py                   (update: create correct consumer based on config)
-sdk/tests/integration/test_queue_delivery.py
+python/taskwire/worker/delivery.py           (new — Strategy pattern)
+python/taskwire/worker/runner.py             (update: use DeliveryStrategy)
+python/taskwire/ipc/result_server.py         (no change)
+python/taskwire/ipc/kafka_consumer.py        (new)
+python/taskwire/runtime.py                   (update: create correct consumer based on config)
+python/tests/integration/test_queue_delivery.py
 ```
 
 ---
 
 ## Python
 
-### `sdk/taskwire/worker/delivery.py`
+### `python/taskwire/worker/delivery.py`
 
 Introduces the Strategy pattern for result delivery. `WorkerRunner` calls `DeliveryStrategy.deliver(...)` — it does not know or care whether delivery is direct or via Kafka.
 
@@ -42,7 +42,7 @@ class DeliveryStrategy(Protocol):
         task_id: bytes,
         result_bytes: bytes,
         is_error: bool,
-    ) -> None: ...
+    ) -> bool: ...
 ```
 
 Any class with a matching `deliver` method satisfies this protocol. No inheritance required.
@@ -61,21 +61,21 @@ Delivers result directly to the worker-provided callback address. Retries with e
 | Method | Signature | Responsibility |
 |--------|-----------|----------------|
 | `__init__` | `(callback_addr: str, cfg: DirectDeliveryConfig)` | Store fields |
-| `deliver` | `(task_id, result_bytes, is_error) -> None` | Parse `callback_addr`. For attempt in range(`_max_retries`): open TCP socket, connect, send RESULT frame. On success: return. On `OSError`: compute backoff delay (`backoff_ms * 2^attempt` if exponential), sleep, retry. After all retries fail: log warning and return. Caller (`WorkerRunner.run`) is responsible for raising `DeliveryFailedError` at the Future level. |
+| `deliver` | `(task_id, result_bytes, is_error) -> bool` | Parse `callback_addr`. For attempt in range(`_max_retries`): open TCP socket, connect, send RESULT frame. On success: return `True`. On `OSError`: compute backoff delay (`backoff_ms * 2^attempt` if exponential), sleep, retry. After all retries fail: log warning and return `False`. Caller (`WorkerRunner.run`) reports failure via COMPLETE `status: "delivery_failed"`; the sidecar relays that to the Runtime as `DeliveryFailedError`. |
 
 #### `KafkaDelivery`
 
-Delivers result to a Kafka topic. The worker is a producer. Fire-and-forget from the worker's perspective — Kafka durability handles the rest.
+Delivers result to a Kafka topic. The worker is a producer. It waits for producer flush before COMPLETE so the sidecar never releases a task whose result has not reached Kafka.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `_producer` | `KafkaProducer` | `kafka-python` producer, created once per worker process |
+| `_producer` | `confluent_kafka.Producer` | Producer created once per worker process |
 | `_topic` | `str` | From `config.result_delivery.queue.topic` |
 
 | Method | Signature | Responsibility |
 |--------|-----------|----------------|
-| `__init__` | `(cfg: QueueDeliveryConfig)` | Create `KafkaProducer(bootstrap_servers=cfg.brokers, acks="all")`. Store topic. |
-| `deliver` | `(task_id, result_bytes, is_error) -> None` | Build message value: `msgpack.dumps({"task_id": task_id, "result": result_bytes, "is_error": is_error})`. Call `_producer.send(topic, key=task_id, value=value)`. `_producer.flush()` to ensure delivery before returning. |
+| `__init__` | `(cfg: QueueDeliveryConfig)` | Create `confluent_kafka.Producer({"bootstrap.servers": ",".join(cfg.brokers), "acks": "all"})`. Store topic. |
+| `deliver` | `(task_id, result_bytes, is_error) -> bool` | Build message value: `msgpack.dumps({"task_id": task_id, "result": result_bytes, "is_error": is_error})`. Call `_producer.produce(topic, key=task_id, value=value)`, then `_producer.flush()` to ensure delivery before returning. Return `True` only when delivery callbacks report success and no messages remain queued; return `False` on producer error/timeout so the worker sends COMPLETE `status: "delivery_failed"`. |
 | `close` | `() -> None` | `_producer.close()` |
 
 #### `DeliveryFactory`
@@ -88,7 +88,7 @@ Delivers result to a Kafka topic. The worker is a producer. Fire-and-forget from
 
 ---
 
-### `sdk/taskwire/worker/runner.py` (updates)
+### `python/taskwire/worker/runner.py` (updates)
 
 `WorkerRunner` no longer calls `_deliver_result` directly. It uses `DeliveryStrategy`.
 
@@ -97,12 +97,12 @@ Changes to `WorkerRunner`:
 | Change | Description |
 |--------|-------------|
 | Add `_delivery` field | `DeliveryStrategy`, created via `DeliveryFactory.create(config, envelope.callback_addr)` at the start of each task loop iteration (because `callback_addr` comes from the task envelope) |
-| Update `run` loop | After `_execute`, call `self._delivery.deliver(task_id, result_bytes, is_error)` |
+| Update `run` loop | After `_execute`, call `delivered = self._delivery.deliver(task_id, result_bytes, is_error)`, keep heartbeat alive until it returns, then send COMPLETE with `status: "ok"` or `"delivery_failed"` exactly as Phase 3 does |
 | Remove `_deliver_result` | Logic moved to `DirectDelivery.deliver` |
 
 ---
 
-### `sdk/taskwire/ipc/kafka_consumer.py`
+### `python/taskwire/ipc/kafka_consumer.py`
 
 The Runtime-side consumer for queue mode. Runs in a background thread, resolves Futures as results arrive.
 
@@ -113,15 +113,15 @@ Provides the same interface contract as `ResultServer` — both call `on_result(
 | Field | Type | Description |
 |-------|------|-------------|
 | `_on_result` | `Callable[[bytes, bytes, bool], None]` | Same callback signature as `ResultServer` |
-| `_consumer` | `KafkaConsumer` | `kafka-python` consumer |
+| `_consumer` | `confluent_kafka.Consumer` | Runtime-side consumer |
 | `_thread` | `threading.Thread` | Daemon thread running `_consume` |
 | `_stop_event` | `threading.Event` | Signals `_consume` to exit |
 
 | Method | Signature | Responsibility |
 |--------|-----------|----------------|
-| `__init__` | `(cfg: QueueDeliveryConfig, on_result: Callable)` | Create `KafkaConsumer(cfg.topic, bootstrap_servers=cfg.brokers, group_id=f"taskwire-{socket.gethostname()}-{os.getpid()}-{uuid4().hex[:8]}", auto_offset_reset="latest", enable_auto_commit=True)`. Store callback. Start daemon thread. |
+| `__init__` | `(cfg: QueueDeliveryConfig, on_result: Callable)` | Create `confluent_kafka.Consumer({"bootstrap.servers": ",".join(cfg.brokers), "group.id": f"taskwire-{socket.gethostname()}-{os.getpid()}-{uuid4().hex[:8]}", "auto.offset.reset": "latest", "enable.auto.commit": True})`, subscribe to `cfg.topic`. Store callback. Start daemon thread. |
 | `stop` | `() -> None` | Set `_stop_event`. `_consumer.close()`. Thread exits on next poll. |
-| `_consume` | `() -> None` | Loop until `_stop_event` set. `records = _consumer.poll(timeout_ms=500)`. For each record: `msgpack.loads(record.value)` → `{task_id, result, is_error}`. Call `_on_result(task_id, result, is_error)`. Tolerate unknown `task_id` (it belongs to another Runtime — `_pending.pop(..., None)` discards it). |
+| `_consume` | `() -> None` | Loop until `_stop_event` set. `msg = _consumer.poll(timeout=0.5)`. Ignore `None`; raise/log `msg.error()`; otherwise `msgpack.loads(msg.value())` → `{task_id, result, is_error}`. Call `_on_result(task_id, result, is_error)`. Tolerate unknown `task_id` (it belongs to another Runtime — `_pending.pop(..., None)` discards it). |
 
 **Consumer group — this must be unique per Runtime, not per host.** Kafka splits a topic's partitions among members of the *same* group. If two Runtime processes on one host shared `taskwire-{hostname}`, each would receive only a subset of partitions — half their results would be delivered to the *other* process and silently dropped, manifesting as futures that randomly never resolve. Every Runtime is its own group (hostname + pid + random suffix for restart safety); each consumes the full topic and discards results that aren't in its `_pending`. This is wasteful (every Runtime reads every result) but correct; partitioning results per-runtime via a reply-topic-per-client scheme is a documented future optimisation, not Phase 6 scope.
 
@@ -129,7 +129,7 @@ Provides the same interface contract as `ResultServer` — both call `on_result(
 
 ---
 
-### `sdk/taskwire/runtime.py` (updates)
+### `python/taskwire/runtime.py` (updates)
 
 `Runtime.__init__` creates either `ResultServer` or `KafkaResultConsumer` based on config. Both provide `stop()` and both call `_on_result`. The rest of `Runtime` is unchanged.
 
@@ -181,7 +181,7 @@ The Go sidecar stamps `delivery_mode` onto the TASK frame. The worker uses it to
 
 ## Tests
 
-### `sdk/tests/integration/test_queue_delivery.py`
+### `python/tests/integration/test_queue_delivery.py`
 
 Requires running `taskwire-agent` and Kafka (use `testcontainers` for Kafka in CI).
 
