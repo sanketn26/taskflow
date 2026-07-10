@@ -3,6 +3,8 @@
 # Platform engineers own this file. Developers never touch it.
 
 cluster:
+  enabled: false                    # multi-node listeners/discovery are off by default
+  allow_insecure: false             # development only; requires an explicit opt-out of auth
   node_name: ""                    # auto-generated UUID if empty
   bind_addr: "0.0.0.0:7946"       # gossip protocol bind address
   advertise_addr: ""               # routable host:port peers use for gossip
@@ -15,14 +17,35 @@ cluster:
 socket: "/var/run/taskwire/agent.sock"
 socket_group: "taskwire"           # socket chmod 0660, chown root:taskwire when possible
 
-# Routable IP for direct result delivery callbacks (workers connect back to this)
-advertise_addr: ""                 # set to this machine's external IP
-
 queue:
-  persistence: "none"              # "none" or "wal"
-  wal_dir: "/var/lib/taskwire/wal"
   max_attempts: 5                  # lease-expiry requeues before dead-letter
   max_frame_size_mb: 16
+  lease_ttl_ms: 30000              # heartbeat interval is derived as ttl/3
+
+storage:
+  state:
+    type: "sqlite"                 # "memory" | "sqlite" | "postgres"
+    sqlite:
+      path: "/var/lib/taskwire/state.db"
+    postgres:
+      dsn_env: "TASKWIRE_POSTGRES_DSN"
+
+  objects:
+    default: "local"
+    inline_threshold_bytes: 65536
+    result_retention_seconds: 86400
+    stores:
+      local:
+        type: "filesystem"         # "memory" | "filesystem" | "s3"
+        path: "/var/lib/taskwire/objects"
+      shared:
+        type: "s3"
+        bucket: ""
+        prefix: "taskwire/objects/"
+        region: ""
+
+ipc:
+  submit_ack_timeout_ms: 5000      # Runtime fails submission if ACK does not arrive
 
 workers:
   count: 4                         # Python worker processes to spawn
@@ -41,13 +64,7 @@ routing:
   #     workload: "compute"
 
 result_delivery:
-  mode: "direct"                   # "direct" (zero infra) or "queue" (Kafka, durable)
-
-  direct:
-    max_retries: 3
-    retry_backoff_ms: 500
-    retry_strategy: "exponential"  # "exponential" or "fixed"
-
+  mode: "agent"                    # "agent" (default) or "queue" (Kafka)
   queue:
     type: "kafka"
     brokers: []                    # ["kafka:9092"]

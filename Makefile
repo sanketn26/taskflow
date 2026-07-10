@@ -32,10 +32,10 @@ fmt-agent:
 lint-agent:
 	cd agent && go vet ./...
 
-# --- SDK (Python 3.13+) ---
+# --- SDK (Python 3.11+) ---
 
 build-sdk:
-	cd python && pip install -e ".[dev]"
+	pip install -e .
 
 test-unit:
 	cd python && pytest tests/unit -v
@@ -70,4 +70,4 @@ clean:
 # --- Dev helpers ---
 
 agent-run: build-agent
-	./agent/bin/taskwire-agent --config config/taskwire.example.yaml
+	./agent/bin/taskwire-agent --config taskwire.example.yaml

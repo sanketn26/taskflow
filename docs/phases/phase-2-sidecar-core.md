@@ -1,5 +1,7 @@
 # Phase 2 — Go Sidecar Core (Single Node)
 
+> **Revision required before implementation:** replace `TaskStore`/`DurableQueue` and `BoltStore` below with the behavioral `TaskStateStore` contract and SQLite default in [Storage and Reference Architecture](../storage.md). Add the `ObjectStore` contract with filesystem default. Queue claims, leases, cancellation, terminal result references, cursors, and acknowledgements must be atomic state transitions rather than an in-memory queue decorated by a key/value store.
+
 ## Goal
 
 A working single-node `taskwire-agent` binary.
@@ -57,6 +59,7 @@ Small, focused interface (Interface Segregation). Only what callers need.
 | `Len` | `() int` | Current queue depth |
 | `Requeue` | `(task *Task) error` | Prepend task to front (priority re-queue after lease expiry); increments `task.Attempts` |
 | `Complete` | `(taskID [16]byte) error` | Task finished successfully — forget it durably. No-op on `InMemoryQueue` (a pulled task is already gone from memory); `DurableQueue` deletes the store record. Called by the COMPLETE handler via the lease-release flow. |
+| `Remove` | `(taskID [16]byte) (bool, error)` | Atomically remove an unleased queued task. Durable implementations delete from the store before returning success; used by CANCEL. |
 
 #### `Task` struct
 
@@ -289,7 +292,7 @@ Wires everything together. No business logic here — only composition.
 | Call `server.Start()` |
 | Call `workerManager.Start()` |
 | Block on `os.Signal` channel for SIGTERM/SIGINT |
-| On signal: call `workerManager.Stop()`, then `server.Stop()`, then `leaseManager.Stop()` |
+| On signal: stop accepting new connections/submissions, allow workers to drain up to a configured deadline, stop workers, then stop lease manager and close the store |
 
 ---
 
@@ -357,7 +360,7 @@ Concurrency gotchas to design around (these are the bugs this phase will actuall
 - **Lock ordering in `expire()`**: the spec deliberately unlocks before calling `queue.Requeue` — `LeaseManager` and `Queuer` have separate mutexes, and calling one while holding the other invites deadlock the moment someone adds a reverse call. Keep that discipline; document it in a comment on the mutex fields.
 - **PULL responses and connection writes**: a worker's connection handles both PULL responses and (future) ACKs. All writes to one `net.Conn` must go through a per-connection write mutex — two goroutines interleaving partial frames corrupts the stream irrecoverably.
 - **`handlePull` when queue is empty**: returning an empty ACK and letting the worker back off (as specced) is simple and correct. Resist the temptation to hold the PULL open server-side (long-poll) in this phase — it complicates shutdown; consider it in Phase 7 if the 100ms worker backoff shows up in benchmarks.
-- **Graceful shutdown ordering** in `main.go` matters: stop accepting (server), stop workers, *then* stop the lease manager — reversed, expiring leases re-queue tasks into a queue no one will drain, which is harmless in-memory but writes pointless WAL churn.
+- **Graceful shutdown ordering** in `main.go` matters: stop accepting new work, drain in-flight workers to a deadline, stop workers, then stop the lease manager and store. The server must keep existing worker connections alive during the drain window.
 - **Respawn rate-limiting**: the `< 1s lifetime → sleep 5s` rule in `monitor` is load-bearing. A worker that crashes on import (bad deploy) without it forks-bombs the host.
 
 | Pattern | Where | Why |

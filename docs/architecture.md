@@ -1,5 +1,7 @@
 # Taskwire Architecture
 
+> **Architecture amendment:** [Storage and Reference Architecture](storage.md) is authoritative for task state, payloads, results, and delivery. It replaces worker-to-application callbacks, `callback_addr`, the Bolt-only durability design, and mandatory inline function payloads described in older phase detail below. Those sections remain as historical implementation sketches until rewritten phase-by-phase.
+
 ## Value Proposition
 
 High-performance distributed task execution with no operational broker.
@@ -15,10 +17,11 @@ Celery-style task composition, Go-powered runtime, ships as a single `pip instal
 | No external infrastructure | The Go sidecar IS the broker. No Redis, no RabbitMQ, no Zookeeper. |
 | At-least-once delivery | Lease + heartbeat ensures tasks re-queue on worker failure. Idempotency is the caller's responsibility. **Scope:** this covers worker crashes. Sidecar restart loses the in-memory queue unless `queue.persistence: wal` is enabled — be explicit about this in user docs. |
 | Pull over push | Workers pull from sidecar. Backpressure is natural. No overwhelmed workers. |
-| Result delivery is pluggable | Direct TCP (zero infra, retries on failure) or Kafka (retention, replay). Config-driven, invisible to developer. Direct mode requires the submitting app to be reachable from workers (`advertise_addr` must be routable — NAT/firewalls break it; use queue mode there). |
+| Results flow through the agent | Workers store results through their agent and COMPLETE with an immutable reference. The origin agent records and relays results over the Runtime's existing connection, including reconnect replay. No application callback listener or routable callback address. |
+| Storage by capability | Transactional `TaskStateStore` and immutable `ObjectStore` are separate contracts. Memory supports tests; SQLite/filesystem are defaults; PostgreSQL/S3 are optional. |
 | Broad Python support | Standard CPython 3.11+ is the baseline. Free-threaded builds (3.13t+) are an *accelerator*, never a requirement — requiring 3.13t would exclude nearly the entire ecosystem (most C-extension wheels still don't ship free-threaded variants). |
-| Rust for the hot path | Infrastructure threads (frame codec, result server, worker heartbeat) are implemented in a Rust extension (`taskwire._native`, PyO3/maturin) with a pure-Python fallback. Rust threads run without the GIL, so heartbeats and result handling stay responsive even while task code holds the GIL on standard builds. |
-| Secure by default | Unix socket is `0660` owned by a dedicated group; gossip traffic is encrypted with a shared key; docs state plainly that anyone who can write to the socket can execute arbitrary code (cloudpickle). |
+| Rust is optional acceleration | The MVP does not require a result server because results flow through the Go agent. A native frame codec or heartbeat may be added only after profiling/correctness tests justify its packaging cost; pure Python remains supported. |
+| Secure by default | Clustering is disabled by default and requires a shared key when enabled (unless an explicit development-only insecure override is set). The Unix socket is `0660` owned by a dedicated group; docs state plainly that anyone who can write to it can execute arbitrary code (cloudpickle). |
 
 ---
 
@@ -66,6 +69,25 @@ Celery-style task composition, Go-powered runtime, ships as a single `pip instal
 
 ## Data Flow
 
+### Authoritative single-node flow
+
+```text
+Python Runtime          Go Agent             Python Worker       Storage
+      │                    │                       │                 │
+      │── store/submit ───►│──── object Put ──────────────────────►│
+      │◄── SUBMIT ACK ─────│──── state Create ────────────────────►│
+      │                    │◄──── PULL ────────────│                 │
+      │                    │──── leased TASK ─────►│                 │
+      │                    │◄──── HEARTBEAT ───────│                 │
+      │                    │                       │── execute       │
+      │                    │◄──── COMPLETE(ref) ───│──── result Put ►│
+      │                    │──── fenced terminal state ────────────►│
+      │◄── RESULT(ref) ────│                       │                 │
+      │── result ACK ─────►│                       │                 │
+```
+
+The agent ACKs submission only after referenced input and task state satisfy the configured durability contract. COMPLETE is accepted only for the active `lease_id`. Result notification is replayable by owner/cursor until acknowledged or retention expiry.
+
 ### Task Submission (direct delivery mode)
 
 ```
@@ -86,7 +108,8 @@ Python App                 Go Sidecar              Python Worker
     │                          │                        │
     │                          │                        │ ── execute fn(*args)
     │◄══════════════════════════════════════════════════│
-    │   RESULT (direct TCP)    │                        │
+    │   RESULT + lease_id      │                        │
+    │════════ ACK(task_id, lease_id) ═════════════════►│
     │   task_id + result_bytes │                        │
     │                          │◄─── COMPLETE ──────────│
     │                          │  release lease,        │
@@ -155,16 +178,16 @@ All communication uses the same binary frame format:
 | 0x02 | PULL | Worker → Sidecar | empty |
 | 0x03 | TASK | Sidecar → Worker | msgpack: {task_bytes, lease_id, ttl_ms, callback_addr, delivery_mode} |
 | 0x04 | HEARTBEAT | Worker → Sidecar | msgpack: {lease_id} |
-| 0x05 | RESULT | Worker → App | cloudpickle result (flags=0x00) or exception (flags=0x01) |
+| 0x05 | RESULT | Worker → App | msgpack `{lease_id, result_bytes}` where `result_bytes` is a cloudpickle result (flags=0x00) or exception (flags=0x01) |
 | 0x06 | CANCEL | App → Sidecar | empty — best-effort: remove task from queue if not yet leased; reply ACK (flags=0x00 cancelled, 0x01 too late) |
 | 0x07 | COMPLETE | Worker → Sidecar; Sidecar → Sidecar (Phase 5); Sidecar → App | msgpack: {lease_id, task_id, status, reason} where status is `"ok"` or `"delivery_failed"`. Worker → Sidecar after result delivery: sidecar releases the lease and deletes the WAL record — **this is the only way a task leaves the system successfully**. Phase 5 relays it thief/forwardee → origin to clear the shadow map. On `delivery_failed` the sidecar dead-letters the task and relays COMPLETE to the submitting app's connection so the future raises `DeliveryFailedError` instead of hanging. |
 | 0x08 | STEAL | Sidecar → Sidecar | request: msgpack {n}; response: up to n TASK frames (flags 0x04, no lease_id) followed by ACK with msgpack {count} |
-| 0x09 | ACK | Any → Any | empty, or msgpack {task_id} when acknowledging SUBMIT |
+| 0x09 | ACK | Any → Any | empty, msgpack `{task_id}` for SUBMIT, or `{task_id, lease_id}` for RESULT |
 | 0x0A | STATUS | App/CLI → Sidecar (**local Unix socket only** — never served on the cluster TCP listener) | request: empty; response: msgpack {queue_depth, active_leases: [{task_id, age_ms, attempts}], worker_pids, worker_restarts, deadletter_count, members} — implemented in Phase 2 (the test harness invariants I5/I6 depend on it), surfaced as `taskwire-agent status --json` in Phase 7 |
 
 **SUBMIT is acknowledged.** The sidecar replies with ACK {task_id} after `queue.Push` — and, when `queue.persistence: wal`, only after the WAL write has fsync'd. "Acknowledged" is the exact boundary of the at-least-once guarantee (harness invariant I1): an unACKed submit may be lost; an ACKed one may not.
 
-**COMPLETE ordering rule.** The worker delivers the RESULT *first*, then sends COMPLETE. A worker crash between the two leaves the lease alive → expiry → re-execution → duplicate delivery, which at-least-once permits. The reverse order (COMPLETE before delivery) could lose an acknowledged result forever, which it does not.
+**COMPLETE ordering rule.** In direct mode, the worker sends RESULT and waits for the Runtime to ACK the matching `task_id` and `lease_id`; only then does it send COMPLETE. A successful TCP write alone is not delivery. A worker crash or lost ACK leaves the lease alive → expiry → re-execution → duplicate delivery, which at-least-once permits. Queue mode requires a successful broker delivery report before COMPLETE. The reverse order could lose an acknowledged task result forever.
 
 ---
 
@@ -197,6 +220,8 @@ One YAML file shared by the Go sidecar and Python SDK. Platform engineer owns it
 
 ```yaml
 cluster:
+  enabled: false                # no discovery or cluster TCP listener unless enabled
+  allow_insecure: false         # dev-only override; otherwise encryption_key is required
   node_name: ""                 # auto-generated UUID if empty
   bind_addr: "0.0.0.0:7946"
   advertise_addr: "10.0.1.5:7946"
@@ -214,6 +239,10 @@ queue:
   wal_dir: "/var/lib/taskwire/wal"
   max_attempts: 5               # after this many lease expiries → dead-letter
   max_frame_size_mb: 16
+  lease_ttl_ms: 30000
+
+ipc:
+  submit_ack_timeout_ms: 5000
 
 workers:
   count: 4

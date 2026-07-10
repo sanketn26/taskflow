@@ -1,5 +1,7 @@
 # Phase 4 — Python SDK
 
+> **Revision required before implementation:** `Runtime` receives replayable RESULT notifications on its existing agent connection; it does not create a TCP/Rust `ResultServer`. `@task` gains stable `name` and `version` identity, with inline cloudpickled functions restricted to explicit development mode. Large arguments/results become `ObjectRef` values according to the configured threshold. See [Storage and Reference Architecture](../storage.md).
+
 ## Goal
 
 Developer-facing API. `@task`, `Runtime`, `TaskFuture`. The developer writes a decorated function, submits it via a Runtime, and awaits a Future. They never touch frames, sockets, or config.
@@ -249,6 +251,8 @@ Build order:
 4. **Rust `ResultServer`** — last; the Python one is already passing e2e, so wiring the Rust one in is a pure swap validated by `test_both_result_servers`.
 
 Gotchas:
+
+- **Submission is not complete at `sendall()`**: keep the Future in a `submitting` state until the matching SUBMIT ACK arrives. Bound the wait with `ipc.submit_ack_timeout_ms`; on timeout or reader failure, remove it from `_pending` and fail it. An unACKed task may still execute, so the error must say the submission outcome is unknown.
 
 - **`shutdown(wait=True)` deadlock**: draining with `f.result(timeout=30)` while the result receiver is already stopped hangs every future. Order is law: drain *first*, stop receiver second. Encode that in a comment and a regression test.
 - **`_pending` leak**: a future whose result is never delivered (worker host died, direct delivery exhausted) sits in `_pending` forever. Acceptable for this phase, but track it: add `Runtime.pending_count` property now so Phase 7 observability has the hook.

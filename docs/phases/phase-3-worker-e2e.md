@@ -1,5 +1,7 @@
 # Phase 3 — Python Worker + Single Node E2E
 
+> **Revision required before implementation:** workers no longer host or contact a Runtime callback. Remove `callback_addr`, `ResultServer`, and direct delivery sections below. Workers resolve registered task name/version, fetch inline data or `ObjectRef` through their local agent, store result bytes through that agent, and send a lease-fenced COMPLETE containing the result reference. See [Storage and Reference Architecture](../storage.md).
+
 ## Goal
 
 Python worker process that the sidecar spawns, pulls tasks, executes via `cloudpickle`, and delivers results directly to the callback address. Verified end-to-end using a raw-protocol Python test script — no SDK yet.
@@ -8,7 +10,7 @@ Python worker process that the sidecar spawns, pulls tasks, executes via `cloudp
 
 - Sidecar spawns `N` Python worker processes on startup (from Phase 2 manager)
 - Worker connects to sidecar socket, pulls task, executes `cloudpickle`'d function
-- Worker delivers result directly to the callback address TCP listener, **then** sends COMPLETE to the sidecar — the lease is released and the task never re-delivered (delivery-before-COMPLETE is the at-least-once ordering rule; see architecture.md)
+- Worker delivers result directly to the callback address TCP listener, waits for a matching RESULT ACK, **then** sends COMPLETE to the sidecar. A successful socket write without ACK is retried and never treated as completion.
 - Worker sends heartbeats during execution; sidecar lease stays alive
 - Worker handles execution exceptions: delivers error frame with pickled exception, still COMPLETEs (an exception is a *result* under at-least-once, not a failure to run)
 - Delivery retries exhausted → worker sends COMPLETE with `status: "delivery_failed"` → sidecar dead-letters the task (Phase 2 behaviour)
@@ -80,7 +82,7 @@ Receives results sent directly by workers. Runs in the same Python process as th
 | `address` | `property -> str` | Return `_address` — the routable `"host:port"` passed to workers as callback_addr |
 | `stop` | `() -> None` | Close `_server_sock` — causes `_serve` to exit on next `accept()` |
 | `_serve` | `() -> None` | Loop: `conn, _ = _server_sock.accept()`. On `OSError` (socket closed) break. Spawn daemon thread: `threading.Thread(target=_handle_connection, args=(conn,))` |
-| `_handle_connection` | `(conn: socket.socket) -> None` | `with conn:` read frame via `FrameCodec.read_frame(conn)`. Extract `is_error = bool(frame.flags & 0x01)`. Call `_on_result(frame.task_id, frame.payload, is_error)`. |
+| `_handle_connection` | `(conn: socket.socket) -> None` | Read RESULT, validate its `{lease_id, result_bytes}` envelope, invoke `_on_result`, then send ACK `{task_id, lease_id}`. Duplicate valid results are ACKed even when the Future is already terminal. Callback/deserialisation failure is terminalized before ACK. |
 | `_resolve_ip` | `(advertise_addr: str \| None) -> str` | If `advertise_addr` given, return it. Else: open `socket.socket(AF_INET, SOCK_DGRAM)`, `connect(("8.8.8.8", 80))`, return `getsockname()[0]`. Does not send any traffic. |
 
 **Note:** `_serve` spawns a thread per connection. This pure-Python implementation is the fallback; Phase 4 adds the Rust-native `ResultServer` whose accept/parse threads never contend for the GIL (and which is simply faster on free-threaded builds too). The two expose the identical interface, so this file is also the executable specification for the Rust version.
@@ -117,7 +119,7 @@ Represents a task received from the sidecar.
 | `run` | `() -> None` | Main loop until `_stop_event` set. Call `_pull_task()`. Call `_start_heartbeat(...)` (Rust handle or Python thread). Call `_execute(envelope)`. Call `delivered = _deliver_result(...)` **while the heartbeat is still running** (delivery retries can outlast a TTL). Stop heartbeat handle. Call `_client.complete(lease_id, task_id, "ok" if delivered else "delivery_failed", reason)`. Repeat. Order is load-bearing: deliver → COMPLETE. Crash between them ⇒ lease expiry ⇒ re-run ⇒ duplicate delivery (allowed); COMPLETE-before-deliver could lose an acknowledged result (never allowed). |
 | `_pull_task` | `() -> TaskEnvelope` | Call `_client.pull()`. If ACK with empty payload (no work available), sleep for backoff (100ms), retry. If TASK frame, decode msgpack payload into `TaskEnvelope`. |
 | `_execute` | `(envelope: TaskEnvelope) -> tuple[bytes, bool]` | `cloudpickle.loads(envelope.payload)` to get `{func, args, kwargs}`. Call `func(*args, **kwargs)`. On success: return `(cloudpickle.dumps(result), False)`. On any exception `e`: return `(cloudpickle.dumps(e), True)`. Never re-raise — exceptions are data here. **Two traps:** (1) the *result or exception itself* may fail to pickle — wrap the `dumps` in try/except and fall back to `cloudpickle.dumps(TaskExecutionError(task_id, repr(original)))`, otherwise the worker crashes and the task replays forever; (2) catch `BaseException`, not `Exception` — a `KeyboardInterrupt`/`SystemExit` raised inside task code must not silently kill the worker without delivering an error frame. |
-| `_deliver_result` | `(task_id: bytes, result: bytes, error: bool, callback_addr: str) -> bool` | Parse `callback_addr` into host:port. Open TCP socket, connect, send RESULT frame (`flags=0x01` if error). If connection fails: retry up to `config.direct.max_retries` with exponential backoff (base: `retry_backoff_ms`). Return `True` on success. If all retries fail: log warning, return `False` — the caller reports it via COMPLETE `status: "delivery_failed"`, which the sidecar dead-letters and (Phase 4) relays to the submitting app as `DeliveryFailedError`. |
+| `_deliver_result` | `(task_id: bytes, lease_id: bytes, result: bytes, error: bool, callback_addr: str) -> bool` | Send RESULT with msgpack `{lease_id, result_bytes}`, read and validate ACK `{task_id, lease_id}` with a deadline, and return success only after the matching ACK. Retry connect, write, timeout, malformed ACK, and disconnect failures according to direct-delivery policy. |
 | `_start_heartbeat` | `(lease_id: bytes, ttl_ms: int) -> HeartbeatHandle` | Prefer `taskwire._native.HeartbeatHandle` (Rust); fall back to the Python `_heartbeat_loop` thread. See "Heartbeat and the GIL" below. |
 | `stop` | `() -> None` | Set `_stop_event` |
 

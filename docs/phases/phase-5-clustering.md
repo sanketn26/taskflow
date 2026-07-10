@@ -1,5 +1,7 @@
 # Phase 5 — Clustering
 
+> **Storage amendment:** remote workers return fenced result references through remote agent → origin agent → Runtime. Local filesystem objects must be proxied/copied during forwarding; shared S3 references may be relayed unchanged after store-policy validation. Workers never receive application callback addresses. See [Storage and Reference Architecture](../storage.md).
+
 ## Goal
 
 Multi-node self-aware cluster. Sidecars discover each other via gossip (Hashicorp `memberlist`) and mDNS. Tasks route to nodes by label. Work stealing balances load across nodes. Node failure is detected and in-flight tasks are re-queued.
@@ -91,7 +93,7 @@ When `cluster.encryption_key` is set (base64 32-byte key), pass it to memberlist
 
 #### STEAL endpoint authentication
 
-memberlist's SecretKey covers *gossip* only — the cluster TCP endpoint (`StartCluster`) is our own protocol and gets nothing for free. An unauthenticated STEAL endpoint hands serialized Python callables to anyone who connects, and accepts task injection from anyone. When `encryption_key` is set, the cluster TCP handshake is: server sends 16-byte random nonce → client replies `HMAC-SHA256(key, nonce)` → server verifies before processing any frame. Constant-time compare (`hmac.Equal`). No key configured → handshake skipped (single-node / trusted-LAN dev mode), warning logged.
+memberlist's SecretKey covers *gossip* only — the cluster TCP endpoint (`StartCluster`) is our own protocol and gets nothing for free. An unauthenticated STEAL endpoint hands serialized Python callables to anyone who connects, and accepts task injection from anyone. Cluster listeners start only when `cluster.enabled` is true. In that mode a key is required and the TCP handshake is: server sends 16 random bytes → client replies `HMAC-SHA256(key, nonce)` → server verifies before processing any frame using `hmac.Equal`. The handshake may be skipped only with the explicit development override `cluster.allow_insecure: true`, which logs a warning.
 
 ---
 

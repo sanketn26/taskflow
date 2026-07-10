@@ -1,5 +1,7 @@
 # Phase 6 — Queue Result Delivery
 
+> **Revision required before implementation:** agent-relayed, cursor-replayable results are the default and replace direct TCP callbacks. Kafka is an optional notification/retention integration after terminal result state has been recorded; workers do not bypass the agent to publish completion. This phase must be rewritten around result records and `ObjectRef`, following [Storage and Reference Architecture](../storage.md).
+
 ## Goal
 
 Config-driven result delivery. Add Kafka as a delivery mode alongside direct TCP. The developer's code does not change. The platform engineer sets `result_delivery.mode: "queue"` in config and it just works.
@@ -75,7 +77,7 @@ Delivers result to a Kafka topic. The worker is a producer. It waits for produce
 | Method | Signature | Responsibility |
 |--------|-----------|----------------|
 | `__init__` | `(cfg: QueueDeliveryConfig)` | Create `confluent_kafka.Producer({"bootstrap.servers": ",".join(cfg.brokers), "acks": "all"})`. Store topic. |
-| `deliver` | `(task_id, result_bytes, is_error) -> bool` | Build message value: `msgpack.dumps({"task_id": task_id, "result": result_bytes, "is_error": is_error})`. Call `_producer.produce(topic, key=task_id, value=value)`, then `_producer.flush()` to ensure delivery before returning. Return `True` only when delivery callbacks report success and no messages remain queued; return `False` on producer error/timeout so the worker sends COMPLETE `status: "delivery_failed"`. |
+| `deliver` | `(task_id, result_bytes, is_error) -> bool` | Build message value: `msgpack.dumps({"task_id": task_id, "result": result_bytes, "is_error": is_error})`. Produce with `acks=all`, wait for that record's delivery callback up to a configured deadline, and return `True` only when the broker acknowledges it. `flush()` alone is not proof of success; callback errors, timeout, or undelivered records return `False` so the worker reports `delivery_failed`. |
 | `close` | `() -> None` | `_producer.close()` |
 
 #### `DeliveryFactory`

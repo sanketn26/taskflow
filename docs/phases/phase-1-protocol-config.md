@@ -1,5 +1,7 @@
 # Phase 1 — Protocol + Config
 
+> **Revision required before implementation:** [Storage and Reference Architecture](../storage.md) supersedes callback fields, direct worker-to-app RESULT frames, Bolt-only persistence, and the old result-delivery config in this phase. Phase 1 must define `ObjectRef`, registered task identity/version, owner/cursor result replay, and the `storage.state` / `storage.objects` schema from that decision.
+
 ## Goal
 
 Define the shared wire protocol and configuration schema implemented in both Python and Go.
@@ -75,7 +77,7 @@ Single-responsibility exception hierarchy. All exceptions inherit from `Taskwire
 | `CANCEL` | `0x06` | App → Sidecar | Best-effort cancellation (Phase 4 uses it; defined now so the value is reserved) |
 | `COMPLETE` | `0x07` | Worker → Sidecar (also Sidecar → Sidecar and Sidecar → App later) | Task finished: release lease, delete WAL record. Payload: msgpack `{lease_id, task_id, status: "ok"|"delivery_failed", reason}`. Handled in Phase 2; without it a finished task's lease would expire and re-run forever. |
 | `STEAL` | `0x08` | Sidecar → Sidecar | Request tasks from peer (Phase 5) |
-| `ACK` | `0x09` | Any → Any | Generic acknowledgement; carries msgpack `{task_id}` when acknowledging SUBMIT |
+| `ACK` | `0x09` | Any → Any | Generic acknowledgement. SUBMIT ACK carries `{task_id}`; RESULT ACK carries `{task_id, lease_id}`. |
 | `STATUS` | `0x0A` | App/CLI → Sidecar | Agent introspection snapshot (local socket only). Implemented in Phase 2 — the test harness needs it; the `status --json` CLI arrives in Phase 7. |
 
 ---
@@ -181,6 +183,8 @@ All config classes are frozen dataclasses. Immutable after load — no one mutat
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `enabled` | `bool` | `False` | Enable discovery and the cluster TCP listener |
+| `allow_insecure` | `bool` | `False` | Development-only override allowing enabled clustering without a key |
 | `node_name` | `str` | `""` | Auto-generates a UUID if empty at load time |
 | `bind_addr` | `str` | `"0.0.0.0:7946"` | Gossip bind address |
 | `task_port` | `int` | `7947` | Cluster TCP endpoint for STEAL/forwarding (Phase 5). Separate from the gossip port — memberlist owns 7946's TCP *and* UDP. |
@@ -197,6 +201,13 @@ All config classes are frozen dataclasses. Immutable after load — no one mutat
 | `wal_dir` | `str` | `"/var/lib/taskwire/wal"` | Directory for the write-ahead log |
 | `max_attempts` | `int` | `5` | Lease-expiry re-queues before a task is dead-lettered |
 | `max_frame_size_mb` | `int` | `16` | Reject frames larger than this |
+| `lease_ttl_ms` | `int` | `30000` | Lease duration; worker heartbeat interval derives as one third of this value |
+
+#### `IPCConfig`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `submit_ack_timeout_ms` | `int` | `5000` | Maximum time Runtime waits for a SUBMIT ACK before failing the Future |
 
 #### `ResourceConfig`
 
@@ -257,6 +268,7 @@ Top-level config object. This is what both the SDK and (indirectly via YAML) the
 | Field | Type |
 |-------|------|
 | `cluster` | `ClusterConfig` |
+| `ipc` | `IPCConfig` |
 | `socket` | `str` |
 | `socket_group` | `str` (default `"taskwire"` — socket is chmod 0660, group-owned) |
 | `advertise_addr` | `str` |
@@ -277,7 +289,7 @@ Top-level config object. This is what both the SDK and (indirectly via YAML) the
 | `load` | `classmethod(path: str \| None = None) -> Config` | If path given, load that file. Otherwise call `_find_config_file()`. Parse YAML, call `_from_dict()`, call `_validate()`. Raise `ConfigError` on any failure. |
 | `_from_dict` | `classmethod(data: dict) -> Config` | Map raw parsed dict to dataclass hierarchy. Use `.get()` with defaults everywhere — never KeyError. |
 | `_find_config_file` | `staticmethod() -> str \| None` | Walk `SEARCH_PATHS = ["./taskwire.yaml", "~/.taskwire/taskwire.yaml", "/etc/taskwire/taskwire.yaml"]`. Return first existing path or None. |
-| `_validate` | `(self) -> None` | Raise `ConfigError` if: `result_delivery.mode` not in `{"direct", "queue"}`; `queue.persistence` not in `{"none", "wal"}`; `workers.count < 0` (0 is valid — submit-only node); `queue.max_attempts < 1`; `cluster.encryption_key` set but not base64 decoding to exactly 32 bytes; `result_delivery.mode == "queue"` with empty `result_delivery.queue.brokers`. Auto-fill `cluster.node_name` with `uuid.uuid4().hex` if empty. |
+| `_validate` | `(self) -> None` | Raise `ConfigError` for invalid enums/ranges, `lease_ttl_ms < 1000`, non-positive ACK timeout, malformed keys, queue mode without brokers, or cluster enabled without a key unless `allow_insecure` is explicitly true. Auto-fill `cluster.node_name` with `uuid.uuid4().hex` if empty. |
 
 **Pattern:** Factory Method (`Config.load` hides file discovery, parsing, and validation). Value Object (frozen dataclasses, data-only, no behaviour). Fail-fast (`_validate` on load, not at use time).
 
@@ -343,9 +355,10 @@ Mirror the Python dataclass hierarchy exactly — same field names in snake_case
 
 | Struct | Fields |
 |--------|--------|
-| `Config` | `Cluster ClusterConfig`, `Socket string`, `SocketGroup string`, `AdvertiseAddr string`, `Queue QueueConfig`, `Workers WorkerConfig`, `Routing RoutingConfig`, `ResultDelivery ResultDeliveryConfig`, `Metrics MetricsConfig` |
-| `ClusterConfig` | `NodeName, BindAddr, AdvertiseAddr string`, `TaskPort int`, `Seeds []string`, `MDNS bool`, `EncryptionKey string` |
-| `QueueConfig` | `Persistence string`, `WALDir string`, `MaxAttempts int`, `MaxFrameSizeMB int` |
+| `Config` | `Cluster ClusterConfig`, `IPC IPCConfig`, `Socket string`, `SocketGroup string`, `AdvertiseAddr string`, `Queue QueueConfig`, `Workers WorkerConfig`, `Routing RoutingConfig`, `ResultDelivery ResultDeliveryConfig`, `Metrics MetricsConfig` |
+| `ClusterConfig` | `Enabled, AllowInsecure bool`, `NodeName, BindAddr, AdvertiseAddr string`, `TaskPort int`, `Seeds []string`, `MDNS bool`, `EncryptionKey string` |
+| `QueueConfig` | `Persistence string`, `WALDir string`, `MaxAttempts int`, `MaxFrameSizeMB int`, `LeaseTTLMS int` |
+| `IPCConfig` | `SubmitAckTimeoutMS int` |
 | `ResourceConfig` | `MaxMemoryMB, MaxCPUPercent int` |
 | `WorkerConfig` | `Count int`, `Labels map[string]string`, `Resources ResourceConfig` |
 | `DirectDeliveryConfig` | `MaxRetries int`, `RetryBackoffMS int`, `RetryStrategy string` |
@@ -362,7 +375,7 @@ Mirror the Python dataclass hierarchy exactly — same field names in snake_case
 | `Load` | `(path string) (*Config, error)` | Read file at path, unmarshal YAML into Config struct, call `applyDefaults`, call `validate`, return. |
 | `FindConfigFile` | `() (string, error)` | Walk standard paths (same as Python SEARCH_PATHS). Return first found or `("", ErrNotFound)`. |
 | `applyDefaults` | `(c *Config)` | Set `NodeName` to `uuid.New().String()` if empty. Set `Socket` to `/var/run/taskwire/agent.sock` and `SocketGroup` to `"taskwire"` if empty. Set `Cluster.TaskPort` to 7947, `Queue.Persistence` to `"none"`, `Queue.MaxAttempts` to 5, `Queue.MaxFrameSizeMB` to 16 if zero-valued. **Worker count:** YAML `count: 0` is meaningful (submit-only node), so `Workers.Count` cannot default via zero-check — use a pointer or "key absent" detection to default to 4 only when the key is missing. |
-| `validate` | `(c *Config) error` | Mirror the Python `_validate` exactly: same rules, same failure cases (mode enum, persistence enum, `Workers.Count < 0`, `MaxAttempts < 1`, encryption-key length, queue mode without `ResultDelivery.Queue.Brokers`). The two validators are tested against the same YAML fixtures. |
+| `validate` | `(c *Config) error` | Mirror Python `_validate`, including lease/ACK timeout ranges and refusing enabled clustering without a valid key unless `AllowInsecure` is true. The two validators are tested against the same YAML fixtures. |
 
 ---
 
