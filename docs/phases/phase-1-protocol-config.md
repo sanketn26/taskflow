@@ -1,460 +1,242 @@
-# Phase 1 — Protocol + Config
-
-> **Revision required before implementation:** [Storage and Reference Architecture](../storage.md) supersedes callback fields, direct worker-to-app RESULT frames, Bolt-only persistence, and the old result-delivery config in this phase. Phase 1 must define `ObjectRef`, registered task identity/version, owner/cursor result replay, and the `storage.state` / `storage.objects` schema from that decision.
+# Phase 1 — Protocol and Configuration
 
 ## Goal
 
-Define the shared wire protocol and configuration schema implemented in both Python and Go.
-No execution, no networking, no processes. Pure data encoding and config parsing.
+Freeze the cross-language wire, envelope, reference, and configuration contracts used by Python and Go. This phase contains no task execution, daemons, networking, or persistent storage implementations.
 
-## Testable Outcome
+Workers never receive application callback addresses, and Kafka is not a result-transport mode. The schemas in this file are the complete protocol and configuration contract for implementation.
 
-- Frame encode → decode round-trip passes in Python (unit tests)
-- Frame encode → decode round-trip passes in Go (unit tests)
-- A frame encoded in Python can be decoded in Go (cross-language test via subprocess)
-- `Config.load()` correctly parses a YAML file in Python
-- `config.Load()` correctly parses a YAML file in Go
-- Invalid/missing config raises `ConfigError` (Python) or returns an error (Go)
+## Deliverables
 
----
+- Python and Go frame codecs with byte-for-byte parity.
+- Strict msgpack envelope validation in both languages.
+- Shared definitions for task identity, `ObjectRef`, owner IDs, cursors, failures, and result records.
+- Python and Go configuration loaders validated against one example YAML file.
+- Fuzz seeds for frame and envelope decoding.
+
+## Wire Frame
+
+Every connection uses this 23-byte header followed by `payload_len` bytes:
+
+| Offset | Size | Field | Encoding |
+|---:|---:|---|---|
+| 0 | 1 | protocol version | `0x01` |
+| 1 | 1 | message type | unsigned byte |
+| 2 | 16 | task ID | raw UUID bytes; zero UUID for connection-scoped requests |
+| 18 | 1 | flags | bit field |
+| 19 | 4 | payload length | unsigned big-endian uint32 |
+
+Flags are `0x01` error, `0x02` idempotent, and `0x04` forwarded. Unknown flag bits are rejected in v1. Readers validate the version, type, flags, and configured maximum length before allocating a payload buffer. EOF before the first header byte is a clean disconnect; EOF after any frame byte is a truncated-frame error.
+
+## Message Types
+
+| Value | Name | Direction | Payload |
+|---:|---|---|---|
+| `0x01` | `SUBMIT` | Runtime → origin agent; agent → agent | `TaskEnvelope` |
+| `0x02` | `PULL` | worker → local agent | `PullRequest` |
+| `0x03` | `TASK` | local agent → worker | `LeasedTask` |
+| `0x04` | `HEARTBEAT` | worker → local agent | `{lease_id}` |
+| `0x05` | `RESULT` | origin agent → Runtime | `ResultNotification` |
+| `0x06` | `CANCEL` | Runtime → origin agent | `{owner_id}` |
+| `0x07` | `COMPLETE` | worker → local agent; remote agent → origin | `Completion` |
+| `0x08` | `STEAL` | agent ↔ agent | Phase 5 request/response |
+| `0x09` | `ACK` | response | typed `Ack` payload |
+| `0x0A` | `STATUS` | local client → local agent | empty request; status snapshot response |
+| `0x0B` | `RESUME_RESULTS` | Runtime → origin agent | `{owner_id, after_cursor, limit}` |
+| `0x0C` | `ERROR` | response | `{code, message, retryable}` |
+| `0x0D` | `OBJECT_PUT` | Runtime/worker/agent → local agent | `{transfer_id, codec, size, sha256}` |
+| `0x0E` | `OBJECT_GET` | Runtime/worker/agent → local agent | `{transfer_id, object: ObjectRef}` |
+| `0x0F` | `OBJECT_CHUNK` | either direction during object RPC | `{transfer_id, sequence, data, eof}` |
+
+`RESULT` is agent-to-Runtime only. A Runtime ACK is `{kind: "result", owner_id, task_id, cursor}`. SUBMIT ACK is `{kind: "submit", task_id}` and is sent only after the configured input and task-state durability boundary is satisfied. ACK payloads are never inferred from connection context.
+
+Object transfers are correlated by a random 16-byte `transfer_id`. Chunks are contiguous, zero-based, and individually bounded by the frame limit. PUT begins with metadata, streams chunks, and ends with an `eof` chunk; the final ACK returns the canonical `ObjectRef` only after size/checksum verification and the store durability boundary. GET returns metadata followed by chunks and a final ACK. A sequence gap, overrun, checksum mismatch, timeout, or disconnect aborts and cleans the partial transfer. Implementations apply per-connection transfer-count and byte limits.
+
+## Canonical Msgpack Schemas
+
+All maps use UTF-8 string keys. Decoders reject missing required keys, wrong types, duplicate logical keys, trailing bytes, and unknown keys unless a schema explicitly marks them as forward-compatible. IDs are fixed-size binary values: task/owner/lease IDs are 16 bytes; cursors are unsigned 64-bit integers.
+
+### `ObjectRef`
+
+```text
+{
+  store: string,       # configured object-store name
+  key: string,         # opaque store-relative key
+  size: uint64,
+  sha256: binary(32),
+  codec: string        # "cloudpickle", "msgpack", or "bytes"
+}
+```
+
+References are immutable and checksum-verified. An explicit `ObjectRef` is not copied inline.
+
+### `ValueRef`
+
+Exactly one of:
+
+```text
+{inline: binary, codec: string}
+{object: ObjectRef}
+```
+
+The encoder selects an object reference when serialized bytes exceed `storage.objects.inline_threshold_bytes`.
+
+### Task and result envelopes
+
+```text
+TaskEnvelope {
+  owner_id: binary(16),
+  task_name: string,
+  task_version: string,
+  args: ValueRef,
+  labels: map<string,string>,
+  idempotent: bool,
+  submitted_at_unix_ms: int64
+}
+
+LeasedTask {
+  task: TaskEnvelope,
+  lease_id: binary(16),
+  ttl_ms: uint32,
+  attempt: uint32
+}
+
+Completion {
+  lease_id: binary(16),
+  result: ObjectRef | nil,
+  failure: Failure | nil
+}
+
+Failure {
+  code: string,
+  message: string,
+  details: ValueRef | nil,
+  retryable: bool
+}
+
+ResultNotification {
+  owner_id: binary(16),
+  cursor: uint64,
+  state: "succeeded" | "failed" | "cancelled",
+  result: ObjectRef | nil,
+  failure: Failure | nil
+}
+```
+
+`Completion` requires exactly one of `result` or `failure`. The agent accepts it only for the active fencing lease. A result notification is replayed until its ACK or retention expiry. Registered `task_name` plus `task_version` is the production identity; inline serialized functions are permitted only when `tasks.allow_inline_functions` is true and use the reserved identity `__inline__`.
+
+## Configuration Contract
+
+Unknown fields are errors. Environment substitution is not performed by the library. Relative filesystem paths resolve against the configuration file directory. Durations are integer milliseconds/seconds as named, not free-form strings.
+
+```yaml
+socket: "/var/run/taskwire/agent.sock"
+socket_group: "taskwire"
+
+ipc:
+  submit_ack_timeout_ms: 5000
+  reconnect_backoff_ms: 250
+  result_batch_size: 100
+
+queue:
+  max_attempts: 5
+  max_frame_size_mb: 16
+  lease_ttl_ms: 30000
+
+storage:
+  state:
+    type: "sqlite"              # v0.1: memory | sqlite
+    dsn: "/var/lib/taskwire/state.db"
+  objects:
+    default: "local"
+    inline_threshold_bytes: 65536
+    result_retention_seconds: 86400
+    stores:
+      local:
+        type: "filesystem"      # v0.1: memory | filesystem
+        root: "/var/lib/taskwire/objects"
+
+tasks:
+  allow_inline_functions: false
+
+workers:
+  count: 4
+  shutdown_grace_ms: 30000
+  labels: {workload: "general"}
+  resources: {max_memory_mb: 2048, max_cpu_percent: 80}
+
+cluster:
+  enabled: false
+  allow_insecure: false
+  node_name: ""
+  bind_addr: "0.0.0.0:7946"
+  advertise_addr: ""
+  task_port: 7947
+  seeds: []
+  mdns: true
+  encryption_key: ""
+
+routing:
+  rules: []
+
+integrations:
+  kafka:
+    enabled: false
+    brokers: []
+    topic: "taskwire-results"
+    delivery_timeout_ms: 30000
+
+metrics:
+  listen_addr: ""
+```
+
+Validation requirements:
+
+- `lease_ttl_ms >= 1000`; heartbeat interval is one third of it.
+- Frame size, timeouts, batch sizes, attempts, and retention values are positive.
+- `memory` state/object stores require an explicit development configuration warning.
+- SQLite and filesystem paths must be non-empty; configured default object store must exist.
+- Unknown backend types, including PostgreSQL/S3 until their separately gated adapters ship, are rejected with `unsupported_backend`.
+- Enabling clustering requires a decoded 32-byte key unless `allow_insecure` is true.
+- Enabling Kafka requires brokers and a non-empty topic. Kafka never changes worker completion ordering or Runtime result replay.
 
 ## Files
 
-```
-python/taskwire/protocol/messages.py
-python/taskwire/protocol/frames.py        (pure-Python codec — always present)
-python/taskwire/protocol/__init__.py      (selects Rust codec if importable, else pure Python)
-python/taskwire/config.py
+```text
 python/taskwire/exceptions.py
-
-native/Cargo.toml                      (pyo3, maturin, abi3-py311)
-native/src/lib.rs
-native/src/frame.rs                    (Rust codec — same API as frames.py)
-
+python/taskwire/protocol/messages.py
+python/taskwire/protocol/frames.py
+python/taskwire/config.py
 agent/pkg/protocol/protocol.go
-agent/pkg/protocol/protocol_test.go
 agent/internal/config/config.go
+taskwire.example.yaml
+python/tests/unit/test_protocol.py
+python/tests/unit/test_config.py
+agent/pkg/protocol/protocol_test.go
 agent/internal/config/config_test.go
+python/tests/integration/test_protocol_compat.py
 ```
 
----
+The optional Rust codec is deferred until profiling justifies it. If implemented, it must be byte-identical to the Python reference and the package must continue to work without it.
 
-## Python
+## Required Tests
 
-### `python/taskwire/exceptions.py`
+- Round-trip every message and schema in Python and Go.
+- Cross-language golden vectors in both directions, including `ObjectRef`, failures, and cursors.
+- Reject unknown version/type/flags, short headers, truncated payloads, oversize lengths, malformed msgpack, bad ID sizes, invalid union shapes, and unknown configuration fields.
+- Verify a claimed 4 GiB payload is rejected before allocation.
+- Verify Python and Go load `taskwire.example.yaml` to equivalent normalized values.
+- Verify cluster, storage, lease, and Kafka conditional validation.
+- Seed Python and Go fuzzers with all valid message forms and malformed boundary cases.
 
-Single-responsibility exception hierarchy. All exceptions inherit from `TaskwireError` so callers can catch broadly or narrowly.
+## Implementation Order
 
-| Class | Inherits | Purpose |
-|-------|----------|---------|
-| `TaskwireError` | `Exception` | Base class for all taskwire exceptions |
-| `SidecarNotRunning` | `TaskwireError` | Agent socket not reachable |
-| `ConfigError` | `TaskwireError` | YAML parse failure or missing required field |
-| `ProtocolError` | `TaskwireError` | Frame too short, unknown type, payload length mismatch |
-| `TaskExecutionError` | `TaskwireError` | Task raised an exception on the worker; fields: `task_id: bytes`, `reason: str`, `original: BaseException \| None` |
-| `DeliveryFailedError` | `TaskwireError` | Task succeeded but result could not be delivered; fields: `task_id: bytes`, `reason: str` |
-| `LeaseExpiredError` | `TaskwireError` | Worker's lease TTL elapsed — stop working on this task |
+1. Define golden schema fixtures and error codes.
+2. Implement the pure-Python frame codec and envelope validators.
+3. Port them to Go and run parity tests immediately.
+4. Implement both config loaders against the same YAML fixture.
+5. Add fuzz targets and commit the seed corpus.
 
-**Pattern:** Exception hierarchy (not a flat list) so callers can `except TaskwireError` or be specific.
+## Exit Gate
 
----
-
-### `python/taskwire/protocol/messages.py`
-
-| Symbol | Type | Purpose |
-|--------|------|---------|
-| `MessageType` | `IntEnum` | Canonical message type constants, shared between SDK and worker so both sides agree on values |
-
-`MessageType` values:
-
-| Name | Value | Direction | Meaning |
-|------|-------|-----------|---------|
-| `SUBMIT` | `0x01` | App → Sidecar; Sidecar → Sidecar in Phase 5 forwarding | Submit a task for execution. Phase 5 forwarded SUBMIT frames set flag `0x04`. |
-| `PULL` | `0x02` | Worker → Sidecar | Request next available task |
-| `TASK` | `0x03` | Sidecar → Worker | Deliver task with lease |
-| `HEARTBEAT` | `0x04` | Worker → Sidecar | Keep lease alive |
-| `RESULT` | `0x05` | Worker → App | Deliver result (direct mode) |
-| `CANCEL` | `0x06` | App → Sidecar | Best-effort cancellation (Phase 4 uses it; defined now so the value is reserved) |
-| `COMPLETE` | `0x07` | Worker → Sidecar (also Sidecar → Sidecar and Sidecar → App later) | Task finished: release lease, delete WAL record. Payload: msgpack `{lease_id, task_id, status: "ok"|"delivery_failed", reason}`. Handled in Phase 2; without it a finished task's lease would expire and re-run forever. |
-| `STEAL` | `0x08` | Sidecar → Sidecar | Request tasks from peer (Phase 5) |
-| `ACK` | `0x09` | Any → Any | Generic acknowledgement. SUBMIT ACK carries `{task_id}`; RESULT ACK carries `{task_id, lease_id}`. |
-| `STATUS` | `0x0A` | App/CLI → Sidecar | Agent introspection snapshot (local socket only). Implemented in Phase 2 — the test harness needs it; the `status --json` CLI arrives in Phase 7. |
-
----
-
-### `python/taskwire/protocol/frames.py`
-
-#### `Frame` (dataclass, frozen=True)
-
-Immutable value object representing one message on the wire.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `msg_type` | `MessageType` | Message type enum value |
-| `task_id` | `bytes` | 16-byte UUID in raw form |
-| `flags` | `int` | Bit field: `0x01` = error result, `0x02` = idempotent task, `0x04` = forwarded task (Phase 5; never re-forward) |
-| `payload` | `bytes` | Message-specific body (cloudpickle, msgpack, or empty) |
-
-The wire header carries a leading `version` byte (`PROTOCOL_VERSION = 0x01`). It is *not* a `Frame` field — the codec writes it on encode and validates it on decode. Decoding a frame with an unknown version raises `ProtocolError("unsupported protocol version")`. This one byte is what allows v0.2 to evolve the format without silently corrupting v0.1 peers.
-
-#### `FrameCodec` (no state — class of static methods, SRP)
-
-All methods are pure functions. No instantiation needed.
-
-| Method | Signature | Responsibility |
-|--------|-----------|----------------|
-| `HEADER_SIZE` | `ClassVar[int] = 23` | Constant: 1 (ver) + 1 (type) + 16 (task_id) + 1 (flags) + 4 (pay_len) bytes |
-| `MAX_FRAME_SIZE` | `ClassVar[int] = 16 * 1024 * 1024` | Reject frames whose `pay_len` exceeds this — a corrupt length prefix must not OOM the process |
-| `encode` | `(frame: Frame) -> bytes` | Pack header fields big-endian using `struct.pack(">BB16sBL", PROTOCOL_VERSION, ...)` followed by payload bytes |
-| `decode` | `(data: bytes) -> Frame` | Validate `len(data) >= HEADER_SIZE`, check version byte, unpack header, slice payload; raise `ProtocolError` if data is short, version unknown, `pay_len > MAX_FRAME_SIZE`, or payload_len mismatches available data |
-| `read_frame` | `(sock: socket.socket) -> Frame` | Read exactly `HEADER_SIZE` bytes (loop until all received), extract `payload_len`, read exactly that many more bytes; raise `ProtocolError` on short read or closed socket; this is the canonical way all components read from a socket |
-
-**Pattern:** Static utility class (no state, no inheritance needed). All logic is in functions — testable without instantiation.
-
-**Implementation notes (pure-Python codec):**
-
-- `read_frame` must use a `recv_exact` loop — `sock.recv(n)` may return fewer than `n` bytes. Use `memoryview(bytearray(n))` and `sock.recv_into(view[got:])` to avoid per-chunk copies:
-
-  ```python
-  def _recv_exact(sock: socket.socket, n: int) -> bytes:
-      buf = bytearray(n)
-      view = memoryview(buf)
-      got = 0
-      while got < n:
-          r = sock.recv_into(view[got:])
-          if r == 0:
-              raise ProtocolError(f"socket closed mid-frame ({got}/{n} bytes)")
-          got += r
-      return bytes(buf)
-  ```
-
-- `decode` must slice the payload by the *declared* `pay_len`, never "the rest of the buffer" — frames may be back-to-back in a stream.
-- Pre-compile the struct: `_HEADER = struct.Struct(">BB16sBL")` at module level; `_HEADER.pack/unpack_from` is measurably faster than the module-level functions.
-
----
-
-### `native/src/frame.rs` — Rust codec (`taskwire._native`)
-
-Same public API as `frames.py` so the two are drop-in interchangeable. `python/taskwire/protocol/__init__.py` selects at import time:
-
-```python
-try:
-    from taskwire._native import FrameCodec, Frame  # Rust
-    NATIVE = True
-except ImportError:
-    from taskwire.protocol.frames import FrameCodec, Frame  # pure Python
-    NATIVE = False
-```
-
-PyO3 sketch:
-
-```rust
-#[pyclass(frozen)]
-pub struct Frame {
-    #[pyo3(get)] msg_type: u8,
-    #[pyo3(get)] task_id: Py<PyBytes>,   // 16 bytes
-    #[pyo3(get)] flags: u8,
-    #[pyo3(get)] payload: Py<PyBytes>,
-}
-
-#[pyfunction]
-fn read_frame(py: Python<'_>, fd: i32) -> PyResult<Frame> {
-    // py.allow_threads(|| { ... read_exact on the raw fd ... })
-    // GIL is released for the entire blocking read — other Python
-    // threads keep running while we wait on the socket.
-}
-```
-
-Key decisions:
-
-- The Rust side takes the **raw file descriptor** (`sock.fileno()`), not the Python socket object — all blocking I/O happens inside `py.allow_threads`, so it never holds the GIL while waiting.
-- Build with `abi3-py311` so one wheel per platform covers all CPython ≥ 3.11 (and free-threaded builds via `cp313t` when PyO3 marks support stable).
-- Why this is Phase 1 and not an afterthought: the codec API is the contract every later phase builds on. Defining the native/fallback split now means Phases 3–4 (heartbeat, result server) slot into an existing pattern instead of retrofitting one.
-
-**Build:** `maturin develop` for local iteration; `maturin build --release` in CI. The Python package must import and pass all tests *without* the native module present (`pip install taskwire` from an sdist on an unsupported platform still works, just slower).
-
----
-
-### `python/taskwire/config.py`
-
-All config classes are frozen dataclasses. Immutable after load — no one mutates config at runtime.
-
-#### `ClusterConfig`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `False` | Enable discovery and the cluster TCP listener |
-| `allow_insecure` | `bool` | `False` | Development-only override allowing enabled clustering without a key |
-| `node_name` | `str` | `""` | Auto-generates a UUID if empty at load time |
-| `bind_addr` | `str` | `"0.0.0.0:7946"` | Gossip bind address |
-| `task_port` | `int` | `7947` | Cluster TCP endpoint for STEAL/forwarding (Phase 5). Separate from the gossip port — memberlist owns 7946's TCP *and* UDP. |
-| `advertise_addr` | `str` | `""` | Routable address peers use to reach this node |
-| `seeds` | `list[str]` | `[]` | Bootstrap peer addresses for cluster join |
-| `mdns` | `bool` | `True` | Enable mDNS for zero-config local discovery |
-| `encryption_key` | `str` | `""` | Base64-encoded 32-byte key. When set, gossip traffic is encrypted (memberlist `SecretKey`). Validate length at load time. |
-
-#### `QueueConfig`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `persistence` | `str` | `"none"` | `"none"` (in-memory only) or `"wal"` (queue survives agent restart — Phase 2) |
-| `wal_dir` | `str` | `"/var/lib/taskwire/wal"` | Directory for the write-ahead log |
-| `max_attempts` | `int` | `5` | Lease-expiry re-queues before a task is dead-lettered |
-| `max_frame_size_mb` | `int` | `16` | Reject frames larger than this |
-| `lease_ttl_ms` | `int` | `30000` | Lease duration; worker heartbeat interval derives as one third of this value |
-
-#### `IPCConfig`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `submit_ack_timeout_ms` | `int` | `5000` | Maximum time Runtime waits for a SUBMIT ACK before failing the Future |
-
-#### `ResourceConfig`
-
-| Field | Type | Default |
-|-------|------|---------|
-| `max_memory_mb` | `int` | `2048` |
-| `max_cpu_percent` | `int` | `80` |
-
-#### `WorkerConfig`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `count` | `int` | `4` | Number of Python worker processes to spawn. `0` is valid — a submit-only node (also used by tests that need tasks to stay queued, e.g. Phase 4 `test_cancel_unleased`). |
-| `labels` | `dict[str, str]` | `{}` | Node labels used for routing |
-| `resources` | `ResourceConfig` | defaults | Resource caps |
-
-#### `DirectDeliveryConfig`
-
-| Field | Type | Default |
-|-------|------|---------|
-| `max_retries` | `int` | `3` |
-| `retry_backoff_ms` | `int` | `500` |
-| `retry_strategy` | `str` | `"exponential"` |
-
-#### `QueueDeliveryConfig`
-
-| Field | Type | Default |
-|-------|------|---------|
-| `type` | `str` | `"kafka"` |
-| `brokers` | `list[str]` | `[]` |
-| `topic` | `str` | `"taskwire-results"` |
-
-#### `ResultDeliveryConfig`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `mode` | `str` | `"direct"` or `"queue"` |
-| `direct` | `DirectDeliveryConfig` | Used when mode is "direct" |
-| `queue` | `QueueDeliveryConfig` | Used when mode is "queue" |
-
-#### `RoutingRule`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `match_label` | `str` | Task label value to match |
-| `prefer` | `dict[str, str]` | Node labels to prefer for matched tasks |
-
-#### `RoutingConfig`
-
-| Field | Type |
-|-------|------|
-| `rules` | `list[RoutingRule]` |
-
-#### `Config`
-
-Top-level config object. This is what both the SDK and (indirectly via YAML) the Go agent consume.
-
-| Field | Type |
-|-------|------|
-| `cluster` | `ClusterConfig` |
-| `ipc` | `IPCConfig` |
-| `socket` | `str` |
-| `socket_group` | `str` (default `"taskwire"` — socket is chmod 0660, group-owned) |
-| `advertise_addr` | `str` |
-| `queue` | `QueueConfig` |
-| `workers` | `WorkerConfig` |
-| `routing` | `RoutingConfig` |
-| `result_delivery` | `ResultDeliveryConfig` |
-| `metrics` | `MetricsConfig` |
-
-#### `MetricsConfig`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `listen_addr` | `str` | `""` | Optional Prometheus `/metrics` listener, added in Phase 7. Empty disables metrics. |
-
-| Method | Signature | Responsibility |
-|--------|-----------|----------------|
-| `load` | `classmethod(path: str \| None = None) -> Config` | If path given, load that file. Otherwise call `_find_config_file()`. Parse YAML, call `_from_dict()`, call `_validate()`. Raise `ConfigError` on any failure. |
-| `_from_dict` | `classmethod(data: dict) -> Config` | Map raw parsed dict to dataclass hierarchy. Use `.get()` with defaults everywhere — never KeyError. |
-| `_find_config_file` | `staticmethod() -> str \| None` | Walk `SEARCH_PATHS = ["./taskwire.yaml", "~/.taskwire/taskwire.yaml", "/etc/taskwire/taskwire.yaml"]`. Return first existing path or None. |
-| `_validate` | `(self) -> None` | Raise `ConfigError` for invalid enums/ranges, `lease_ttl_ms < 1000`, non-positive ACK timeout, malformed keys, queue mode without brokers, or cluster enabled without a key unless `allow_insecure` is explicitly true. Auto-fill `cluster.node_name` with `uuid.uuid4().hex` if empty. |
-
-**Pattern:** Factory Method (`Config.load` hides file discovery, parsing, and validation). Value Object (frozen dataclasses, data-only, no behaviour). Fail-fast (`_validate` on load, not at use time).
-
----
-
-## Go
-
-### `agent/pkg/protocol/protocol.go`
-
-Lives in `pkg/` (not `internal/`) because tests and future tooling may import it directly.
-
-#### Constants
-
-```
-MessageType  byte
-
-Submit    = 0x01
-Pull      = 0x02
-Task      = 0x03
-Heartbeat = 0x04
-Result    = 0x05
-Cancel    = 0x06
-Complete  = 0x07
-Steal     = 0x08
-Ack       = 0x09
-Status    = 0x0A
-
-ProtocolVersion = 0x01
-HeaderSize      = 23   // 1 ver + 1 type + 16 task_id + 1 flags + 4 pay_len
-MaxFrameSize    = 16 << 20
-
-FlagError      = 0x01
-FlagIdempotent = 0x02
-FlagForwarded  = 0x04
-```
-
-#### `Frame` struct
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `Type` | `MessageType` | Message type |
-| `TaskID` | `[16]byte` | UUID raw bytes |
-| `Flags` | `byte` | Bit field (`FlagError`, `FlagIdempotent`, `FlagForwarded`) |
-| `Payload` | `[]byte` | Message body |
-
-#### Functions
-
-| Function | Signature | Responsibility |
-|----------|-----------|----------------|
-| `Encode` | `(f *Frame) []byte` | Allocate `HeaderSize + len(f.Payload)` bytes. Write ProtocolVersion (1B), Type (1B), TaskID (16B), Flags (1B), payload length big-endian uint32 (4B), then payload. Return buffer. |
-| `Decode` | `(data []byte) (*Frame, error)` | Check `len(data) >= HeaderSize`. Check version byte == ProtocolVersion (else `ErrBadVersion`). Unpack header. Reject `payloadLen > MaxFrameSize` (`ErrFrameTooLarge`). Validate `len(data) >= HeaderSize + payloadLen`. Slice payload (no copy). Return Frame or error. |
-| `ReadFrame` | `(r io.Reader) (*Frame, error)` | `io.ReadFull(r, header[:HeaderSize])`. Validate version + payloadLen *before* allocating the payload buffer. `io.ReadFull(r, payload)`. Call `Decode(header + payload)`. Return `io.EOF` cleanly if reader is closed before first byte; return `io.ErrUnexpectedEOF` if closed mid-frame. |
-
-**Pattern:** Pure functions, no types with methods — Go idiomatic for a protocol codec.
-
----
-
-### `agent/internal/config/config.go`
-
-#### Structs
-
-Mirror the Python dataclass hierarchy exactly — same field names in snake_case YAML, same defaults. This ensures one YAML file works for both.
-
-| Struct | Fields |
-|--------|--------|
-| `Config` | `Cluster ClusterConfig`, `IPC IPCConfig`, `Socket string`, `SocketGroup string`, `AdvertiseAddr string`, `Queue QueueConfig`, `Workers WorkerConfig`, `Routing RoutingConfig`, `ResultDelivery ResultDeliveryConfig`, `Metrics MetricsConfig` |
-| `ClusterConfig` | `Enabled, AllowInsecure bool`, `NodeName, BindAddr, AdvertiseAddr string`, `TaskPort int`, `Seeds []string`, `MDNS bool`, `EncryptionKey string` |
-| `QueueConfig` | `Persistence string`, `WALDir string`, `MaxAttempts int`, `MaxFrameSizeMB int`, `LeaseTTLMS int` |
-| `IPCConfig` | `SubmitAckTimeoutMS int` |
-| `ResourceConfig` | `MaxMemoryMB, MaxCPUPercent int` |
-| `WorkerConfig` | `Count int`, `Labels map[string]string`, `Resources ResourceConfig` |
-| `DirectDeliveryConfig` | `MaxRetries int`, `RetryBackoffMS int`, `RetryStrategy string` |
-| `QueueDeliveryConfig` | `Type, Topic string`, `Brokers []string` |
-| `ResultDeliveryConfig` | `Mode string`, `Direct DirectDeliveryConfig`, `Queue QueueDeliveryConfig` |
-| `RoutingRule` | `MatchLabel string`, `Prefer map[string]string` |
-| `RoutingConfig` | `Rules []RoutingRule` |
-| `MetricsConfig` | `ListenAddr string` |
-
-#### Functions
-
-| Function | Signature | Responsibility |
-|----------|-----------|----------------|
-| `Load` | `(path string) (*Config, error)` | Read file at path, unmarshal YAML into Config struct, call `applyDefaults`, call `validate`, return. |
-| `FindConfigFile` | `() (string, error)` | Walk standard paths (same as Python SEARCH_PATHS). Return first found or `("", ErrNotFound)`. |
-| `applyDefaults` | `(c *Config)` | Set `NodeName` to `uuid.New().String()` if empty. Set `Socket` to `/var/run/taskwire/agent.sock` and `SocketGroup` to `"taskwire"` if empty. Set `Cluster.TaskPort` to 7947, `Queue.Persistence` to `"none"`, `Queue.MaxAttempts` to 5, `Queue.MaxFrameSizeMB` to 16 if zero-valued. **Worker count:** YAML `count: 0` is meaningful (submit-only node), so `Workers.Count` cannot default via zero-check — use a pointer or "key absent" detection to default to 4 only when the key is missing. |
-| `validate` | `(c *Config) error` | Mirror Python `_validate`, including lease/ACK timeout ranges and refusing enabled clustering without a valid key unless `AllowInsecure` is true. The two validators are tested against the same YAML fixtures. |
-
----
-
-## Tests
-
-### Python (`python/tests/unit/test_protocol.py`)
-
-| Test | Asserts |
-|------|---------|
-| `test_encode_decode_roundtrip` | `FrameCodec.decode(FrameCodec.encode(frame)) == frame` for all MessageType values |
-| `test_decode_short_data` | `FrameCodec.decode(b"short")` raises `ProtocolError` |
-| `test_payload_length_mismatch` | Frame header claims 100B payload but only 10B present → `ProtocolError` |
-| `test_flags_preserved` | Frame with `flags=0x01` encodes and decodes with `flags=0x01` |
-| `test_task_id_preserved` | 16-byte UUID survives round-trip byte-for-byte |
-| `test_unknown_version_rejected` | First byte `0x7F` → `ProtocolError` mentioning version |
-| `test_oversized_frame_rejected` | Header claiming `pay_len` > MAX_FRAME_SIZE → `ProtocolError`, no allocation of the claimed size |
-| `test_native_python_parity` | (skipped if `_native` not built) every frame encoded by the Rust codec decodes identically in pure Python and vice versa — byte-for-byte equality of `encode` output |
-
-### Python (`python/tests/unit/test_config.py`)
-
-| Test | Asserts |
-|------|---------|
-| `test_load_valid_file` | All fields parsed correctly from `taskwire.example.yaml` at the repo root — that file is the schema contract and must contain every field (including `socket_group`, `cluster.encryption_key`, `cluster.task_port`, and the full `queue:` section) |
-| `test_load_missing_file_uses_defaults` | `Config.load("/nonexistent.yaml")` raises `ConfigError` |
-| `test_load_no_path_uses_defaults` | `Config.load()` with no config file in SEARCH_PATHS returns Config with defaults |
-| `test_invalid_delivery_mode` | `mode: "ftp"` → `ConfigError` |
-| `test_node_name_autofilled` | Empty `node_name` → filled with UUID string after load |
-| `test_workers_zero_valid` | `workers.count: 0` loads without error (submit-only node) |
-| `test_bad_encryption_key` | `encryption_key: "dG9vc2hvcnQ="` (not 32 bytes decoded) → `ConfigError` |
-| `test_queue_mode_requires_brokers` | `result_delivery.mode: "queue"` with empty `result_delivery.queue.brokers` → `ConfigError` |
-
-### Go (`agent/pkg/protocol/protocol_test.go`)
-
-| Test | Asserts |
-|------|---------|
-| `TestEncodeDecodeRoundtrip` | All message types survive encode → decode |
-| `TestReadFrameFromReader` | Pipe writer sends encoded frame, ReadFrame reads it correctly |
-| `TestReadFrameEOF` | Closed reader before first byte returns `io.EOF` |
-| `TestReadFrameUnexpectedEOF` | Reader closes mid-frame returns `io.ErrUnexpectedEOF` |
-
-### Go (`agent/internal/config/config_test.go`)
-
-| Test | Asserts |
-|------|---------|
-| `TestLoadValidConfig` | Example YAML parses all fields |
-| `TestApplyDefaults` | Empty config gets correct defaults |
-| `TestValidateInvalidMode` | Returns error for unknown delivery mode |
-
-### Cross-language (`python/tests/integration/test_protocol_compat.py`)
-
-| Test | Asserts |
-|------|---------|
-| `test_python_encode_go_decode` | Python encodes a SUBMIT frame, writes to file, Go binary reads + decodes it, prints JSON — Python asserts field values match |
-
----
-
-## Implementation Guide
-
-Recommended build order — each step is testable before the next starts:
-
-1. **Python exceptions + `messages.py`** — trivial, unblocks everything.
-2. **Pure-Python `frames.py` + unit tests** — this is the reference implementation. Get the round-trip, short-read, version, and oversize tests green first.
-3. **Go `protocol.go`** — port from the Python reference; run the cross-language test (Python encodes → Go decodes) immediately. Catching an endianness or offset mistake here costs minutes; catching it in Phase 3 costs hours.
-4. **Config (Python, then Go)** — keep the YAML keys as the single source of truth; the two parsers are tested against the *same* `taskwire.example.yaml` file.
-5. **Rust codec last** — by now the contract is frozen and covered by tests; the parity test (`test_native_python_parity`) is your safety net. Set up `maturin develop` in the Makefile (`make native`).
-
-Pitfalls to expect:
-
-- **Endianness**: Python `struct` `>` and Go `binary.BigEndian` must agree; the cross-language test exists precisely for this.
-- **`task_id` as `bytes` vs `str`**: keep it raw 16 bytes everywhere; only `.hex()` it for logging. Mixing representations is the classic source of "task never resolves" bugs later.
-- **msgpack `bytes`/`str` confusion**: configure `msgpack.unpackb(raw=False)` consistently and pin it in one helper module; Go's msgpack must emit bin-type for byte fields.
-
----
-
-## Design Patterns Applied
-
-| Pattern | Where | Why |
-|---------|-------|-----|
-| Value Object | `Frame`, `Config` and all sub-configs | Immutable after creation, no side effects, safe to share across threads |
-| Factory Method | `Config.load()`, `Config._from_dict()` | Hides file discovery, YAML parsing, and validation behind a single call |
-| Static Utility | `FrameCodec` | All methods are pure functions; no state to manage or inject |
-| Fail Fast | `Config._validate()` on load | Catch misconfiguration at startup, not deep in execution |
+Phase 1 is complete when Python and Go pass the same golden vectors and configuration fixture, all malformed-input tests fail closed without large allocation, no callback or direct-result-delivery field remains, and later phases can depend on the schemas without inventing new wire fields.

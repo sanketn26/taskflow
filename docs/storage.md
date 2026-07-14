@@ -1,185 +1,29 @@
-# Storage and Reference Architecture
+# Storage Decision Summary
+
+This file is a non-normative decision summary. The complete interfaces, records, ordering rules, backend behavior, configuration, tests, and exit gates are embedded in Phases 1–6. Implementers do not need this document.
 
 ## Decision
 
-Taskwire separates transactional task state from immutable payload/result objects. These are two interfaces because their correctness requirements differ. A backend must implement one contract explicitly; a generic CRUD adapter is not sufficient.
+Taskwire separates transactional task state from immutable objects:
 
-The default installation requires no external service:
+- `TaskStateStore` owns task creation, eligibility, claims, fencing leases, attempts, cancellation, terminal state, owner result cursors, acknowledgements, and transfer/outbox state.
+- `ObjectStore` owns immutable input/result bytes, metadata, size, codec, and SHA-256 integrity.
 
-- SQLite stores task state, leases, ownership, attempts, and result metadata.
-- The local filesystem stores immutable payload and result objects.
-- In-memory implementations exist for tests and explicitly ephemeral development.
+The zero-infrastructure defaults are SQLite and the local filesystem. Memory implementations are for tests and explicitly ephemeral development. Future PostgreSQL/S3 adapters must pass the same conformance contracts before being advertised.
 
-Optional production backends are PostgreSQL for shared task state and S3-compatible storage for shared objects. Couchbase is not a supported or planned core backend. Additional backends belong in separately versioned adapters and must pass the common conformance suite.
-
-## Why Two Interfaces
+The ordering boundary is:
 
 ```text
-┌────────────────────────────────┐
-│ TaskStateStore                 │
-│ atomic transitions and leases │
-│ memory · SQLite · PostgreSQL   │
-└────────────────────────────────┘
-
-┌────────────────────────────────┐
-│ ObjectStore                    │
-│ immutable bytes and checksums  │
-│ memory · filesystem · S3       │
-└────────────────────────────────┘
+object Put → fenced terminal transaction/result record → notify Runtime → Runtime ACK
 ```
 
-S3 cannot atomically claim a queued task or fence a lease. An in-memory queue cannot provide durable, shared object retention. Pretending both are one interchangeable store would hide materially different guarantees.
+Workers access storage through their local agent and COMPLETE with an `ObjectRef`. They never receive Runtime callback addresses. The origin agent replays results by owner ID and cursor. Kafka, when enabled, publishes committed terminal events from a transactional outbox and is not a source of truth.
 
-## `TaskStateStore`
+Normative storage work is contained in:
 
-The Go contract is behavioral; exact Go types may evolve without weakening it:
-
-```go
-type TaskStateStore interface {
-    Create(ctx context.Context, task TaskRecord) error
-    Claim(ctx context.Context, workerID string, ttl time.Duration) (*TaskRecord, error)
-    Renew(ctx context.Context, taskID TaskID, leaseID LeaseID, ttl time.Duration) error
-    Complete(ctx context.Context, taskID TaskID, leaseID LeaseID, result ObjectRef) error
-    Fail(ctx context.Context, taskID TaskID, leaseID LeaseID, failure Failure) error
-    RequeueExpired(ctx context.Context, now time.Time, limit int) ([]TaskID, error)
-    Cancel(ctx context.Context, taskID TaskID) (bool, error)
-    Get(ctx context.Context, taskID TaskID) (*TaskRecord, error)
-    ListResults(ctx context.Context, ownerID OwnerID, after Cursor, limit int) ([]ResultRecord, Cursor, error)
-    AcknowledgeResult(ctx context.Context, taskID TaskID, ownerID OwnerID) error
-    Close() error
-}
-```
-
-Required properties:
-
-- `Create` is idempotent by `task_id`; conflicting content returns an error.
-- `Claim` atomically selects one eligible task and creates a unique fencing `lease_id`.
-- `Renew`, `Complete`, and `Fail` compare the active lease ID; stale workers cannot mutate a newer attempt.
-- `Complete` atomically records the result reference and terminal state.
-- `Cancel` succeeds only from an eligible queued state.
-- Result listing is resumable by cursor and isolated by submitting Runtime owner ID.
-- Implementations define a transaction isolation strategy and pass race/conformance tests.
-
-Implementations:
-
-| Type | Use | Guarantee |
-|---|---|---|
-| `memory` | Unit tests and disposable development | Lost on agent exit; single process |
-| `sqlite` | Default single-node production | Durable local transactions; SQLite WAL mode |
-| `postgres` | Optional shared/multi-node state | Durable shared transactions; row locking or `SKIP LOCKED` claims |
-
-PostgreSQL is optional, not required for clustering in the first implementation. Phase 5 may continue using origin ownership with per-node SQLite. A later shared-state scheduler can use PostgreSQL after its failure semantics are tested independently.
-
-## `ObjectStore`
-
-```go
-type ObjectStore interface {
-    Put(ctx context.Context, key ObjectKey, body io.Reader, meta ObjectMetadata) (ObjectRef, error)
-    Get(ctx context.Context, ref ObjectRef) (io.ReadCloser, ObjectMetadata, error)
-    Stat(ctx context.Context, ref ObjectRef) (ObjectMetadata, error)
-    Delete(ctx context.Context, ref ObjectRef) error
-    Close() error
-}
-```
-
-`Put` is idempotent for a content-addressed key. Every reference contains:
-
-```text
-store name · immutable key · byte size · SHA-256 checksum · media/codec type
-```
-
-Implementations:
-
-| Type | Use | Guarantee |
-|---|---|---|
-| `memory` | Tests and small ephemeral examples | Lost on exit; bounded by configured memory limit |
-| `filesystem` | Default single-node production | Atomic rename after write/fsync; local to one agent |
-| `s3` | Optional shared payloads/results | Durable shared objects; checksum verified; S3-compatible APIs |
-
-Small values may remain inline in the task-state record. Values above `inline_threshold_bytes` are written to the object store. Explicit `ObjectRef` arguments are never copied inline.
-
-## Task Identity and Serialization
-
-Production tasks are referenced by registered name and version:
-
-```python
-@task(name="reports.generate", version="v3", idempotent=True)
-def generate_report(input_ref):
-    ...
-```
-
-The task envelope contains `task_name`, `task_version`, serialized small arguments or an `input_ref`, labels, and ownership metadata. Workers reject unknown names or versions as terminal deployment errors.
-
-Inline cloudpickled functions are an explicit development compatibility mode, disabled by default in production configuration. Arguments/results may still use cloudpickle when configured, so the local socket and object store remain trusted-code boundaries.
-
-## Agent-Relayed Results
-
-Workers never connect to the submitting application. They store the result object through their local agent and send COMPLETE with its `ObjectRef`. The state transition is fenced by `lease_id`.
-
-```text
-Runtime ⇄ origin agent ⇄ worker
-                    │
-                    ├── TaskStateStore
-                    └── ObjectStore
-```
-
-For a remote worker:
-
-```text
-Runtime ⇄ origin agent ⇄ remote agent ⇄ worker
-```
-
-The remote agent returns the result reference and terminal state to the origin. If the configured object store is local, agents proxy or copy immutable objects as part of forwarding; if it is shared S3, the same reference is usable by both. Workers do not receive application callback addresses.
-
-The Runtime reads RESULT notifications over its existing local agent connection. On reconnect it resumes using `owner_id` plus a result cursor. Result records remain until acknowledged or until the configured retention policy expires.
-
-## Ordering and Failure Recovery
-
-Submission:
-
-```text
-serialize → store object (if externalized) → create task state → SUBMIT ACK
-```
-
-Completion:
-
-```text
-store result object → fenced terminal state update → notify Runtime → Runtime ACK
-```
-
-Task state and object storage do not use a distributed transaction. Recovery is reconciliation-based:
-
-- Object written but state creation failed: orphan collector deletes it after a grace period.
-- Result written but completion failed: worker retries the idempotent fenced completion.
-- State references a missing/corrupt object: terminal `StorageConsistencyError`, metric, and operator alert.
-- Runtime disconnects after completion: durable result record is delivered after reconnect until acknowledged or expired.
-- Stale worker completes after lease expiry: fencing rejects the old lease without changing state.
-
-Garbage collection must never delete inputs referenced by queued, leased, or retryable tasks. Deletion is idempotent, bounded per pass, observable, and delayed by a safety grace period.
-
-## Configuration
-
-The canonical shape is represented in `taskwire.example.yaml`:
-
-```yaml
-storage:
-  state:
-    type: "sqlite"
-    sqlite:
-      path: "/var/lib/taskwire/state.db"
-
-  objects:
-    default: "local"
-    inline_threshold_bytes: 65536
-    result_retention_seconds: 86400
-    stores:
-      local:
-        type: "filesystem"
-        path: "/var/lib/taskwire/objects"
-```
-
-Credentials are loaded through environment/file references or platform credential providers. Plaintext database passwords and cloud secrets do not belong in normal YAML.
-
-## Backend Conformance Gate
-
-Every implementation runs the same suite for idempotent creation, concurrent claim exclusivity, lease fencing, expiry/requeue, cancellation races, result cursor replay, object checksum validation, partial-write cleanup, retention, and shutdown/reopen behavior. A backend is not supported merely because it satisfies the Go interface at compile time.
+- Phase 1: wire references, value unions, object transfer, and configuration.
+- Phase 2: interfaces, SQLite/filesystem semantics, state transitions, conformance, and recovery.
+- Phase 3: worker object access and fenced completion.
+- Phase 4: transparent SDK upload/download and result replay.
+- Phase 5: remote object movement and durable origin ownership.
+- Phase 6: transactional terminal-event outbox.

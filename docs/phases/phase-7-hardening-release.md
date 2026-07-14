@@ -1,322 +1,92 @@
-# Phase 7 — Hardening + Release
+# Phase 7 — Hardening and Release
 
 ## Goal
 
-Production-ready, publicly releasable library. Single `pip install <package>` on a clean machine. `taskwire-agent` binary installs as a system service. Benchmarks published. Documentation complete.
+Turn the validated feature set into supportable, observable, reproducible artifacts. Hardening is cumulative—this phase closes release-wide gaps but does not postpone feature-specific cleanup or tests.
 
-## Naming (resolved 2026-06-11)
+## Release Scope
 
-The project was originally called *taskwire*, but `taskwire` on PyPI is OpenStack TaskFlow — an actively published library in the same domain, so both the distribution and the import package would have collided. The project is now **taskwire** (verified available on PyPI): distribution `taskwire`, `import taskwire`, binary `taskwire-agent`, socket under `/var/run/taskwire/`. Before first publish, re-verify the name is still free and register it on TestPyPI early.
+Declare the exact release profile before cutting artifacts:
 
-## Testable Outcome
+- Core pre-alpha: Phases 0–4, single node, SQLite/filesystem, agent-relayed results.
+- Cluster feature: included only if the Phase 5 exit gate is green.
+- Kafka integration: included only if the Phase 6 exit gate is green and remains optional.
+- PostgreSQL/S3: advertised only after their common conformance suites pass; configuration placeholders alone do not imply support.
 
-- `pip install <package>` on a clean Linux and macOS machine — no manual steps
-- `taskwire-agent install` registers and starts a system service
-- `taskwire-agent start/stop/status` work on both Linux (systemd) and macOS (launchd)
-- `taskwire-agent status --json` reports queue depth, active leases, worker PIDs, dead-letter count, cluster members
-- Full E2E test passes on clean machine with no prior config
-- Benchmarks published against honest baselines (see Benchmarks section)
-- Socket is 0660; systemd unit runs as a dedicated non-root user; gossip key documented as required for multi-host
-- All existing Phase 1–6 tests still pass, on standard CPython 3.11–3.13 and free-threaded 3.13t, with and without the Rust extension
+## Service Management
 
----
+Provide systemd and launchd definitions plus foreground/container operation. The service runs as a dedicated unprivileged user, creates state/object/runtime directories with least privilege, sets conservative file-descriptor/process limits, and uses graceful SIGTERM shutdown. It must not run as root after initialization.
 
-## Files
+Commands:
 
-```
-agent/internal/service/service.go            (new — ServiceManager interface + Detect())
-agent/internal/service/systemd.go            (new — Linux implementation)
-agent/internal/service/launchd.go            (new — macOS implementation)
-agent/cmd/taskwire-agent/main.go             (add install/uninstall subcommands)
-
-packaging/service/taskwire-agent.service     (systemd unit template)
-packaging/service/io.taskwire.agent.plist    (launchd plist template)
-packaging/scripts/build_platforms.sh         (cross-compile agent for all targets)
-packaging/scripts/bundle_wheel.sh            (copy binaries into python/taskwire/_bin/)
-packaging/docker/Dockerfile.agent            (containerised agent)
-
-python/taskwire/_bin.py                      (new — locate bundled binary)
-python/tests/benchmark/bench_taskwire.py     (new)
-pyproject.toml                               (include _bin/**/* in wheel)
+```text
+taskwire-agent run --config PATH
+taskwire-agent validate-config --config PATH
+taskwire-agent status --json --socket PATH
+taskwire-agent version
+taskwire-agent migrate --config PATH
 ```
 
----
-
-## Go
-
-### `agent/internal/service/service.go`
-
-Abstracts OS-level service management behind an interface. Concrete implementations in `systemd.go` and `launchd.go`. Templates are read from `packaging/service/` via `//go:embed` at compile time — templates are not duplicated inside the agent module.
-
-#### `ServiceManager` interface
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `Install` | `(configPath string) error` | Write service unit/plist from embedded template, enable service |
-| `Uninstall` | `() error` | Disable and remove service unit/plist |
-| `Start` | `() error` | Start the service via OS service manager |
-| `Stop` | `() error` | Stop the service |
-| `Status` | `() (string, error)` | Return human-readable status: "running", "stopped", "not installed" |
-
-#### `Detect() ServiceManager`
-
-Factory function. Returns the correct implementation based on OS:
-- Linux: check `/run/systemd/private` exists → `SystemdManager`
-- macOS: `runtime.GOOS == "darwin"` → `LaunchdManager`
-- Other: return `UnsupportedManager` that returns a clear error
-
-#### `SystemdManager` (Linux)
-
-| Method | Responsibility |
-|--------|----------------|
-| `Install(configPath)` | Execute embedded `taskwire-agent.service` template with `{BinaryPath, ConfigPath}`. Write output to `/etc/systemd/system/taskwire-agent.service`. `systemctl daemon-reload`. `systemctl enable taskwire-agent`. |
-| `Uninstall` | `systemctl disable taskwire-agent`. Remove unit file. `systemctl daemon-reload`. |
-| `Start` | `systemctl start taskwire-agent` |
-| `Stop` | `systemctl stop taskwire-agent` |
-| `Status` | `systemctl is-active taskwire-agent` |
-
-Templates are embedded using:
-```go
-//go:embed ../../../packaging/service/taskwire-agent.service
-var systemdTemplate string
-
-//go:embed ../../../packaging/service/io.taskwire.agent.plist
-var launchdTemplate string
-```
-
-#### `LaunchdManager` (macOS)
-
-| Method | Responsibility |
-|--------|----------------|
-| `Install(configPath)` | Execute embedded `io.taskwire.agent.plist` template. Write to `~/Library/LaunchAgents/io.taskwire.agent.plist`. `launchctl load -w <plist_path>`. |
-| `Uninstall` | `launchctl unload -w plist`. Remove file. |
-| `Start` | `launchctl start io.taskwire.agent` |
-| `Stop` | `launchctl stop io.taskwire.agent` |
-| `Status` | `launchctl list io.taskwire.agent` — parse stdout for PID |
-
----
-
-### `agent/cmd/taskwire-agent/main.go` (additions)
-
-Add subcommands via `flag` or `cobra`:
-
-| Subcommand | Responsibility |
-|------------|----------------|
-| `start` | Default (no subcommand). Load config, start server, block on signal. |
-| `install --config <path>` | `service.Detect().Install(configPath)`. Print "Service installed and started." |
-| `uninstall` | `service.Detect().Uninstall()` |
-| `status` | `service.Detect().Status()`, print result |
-| `version` | Print binary version (injected at build time via `ldflags`) |
-
----
+`status` uses the local socket and has bounded timeouts. `migrate` supports dry-run/backup guidance and refuses unsafe downgrade. Service uninstall never deletes state or objects automatically.
 
 ## Packaging
 
-### `packaging/service/taskwire-agent.service`
-
-Systemd unit template. Populated by `SystemdManager.Install`.
-
-```
-[Unit]
-Description=Taskwire Agent
-After=network.target
-
-[Service]
-ExecStart={{.BinaryPath}} --config {{.ConfigPath}}
-Restart=always
-RestartSec=5
-# The socket executes arbitrary Python on behalf of connecting clients —
-# never run this as root.
-User=taskwire
-Group=taskwire
-RuntimeDirectory=taskwire
-StateDirectory=taskwire
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/var/lib/taskwire
-
-[Install]
-WantedBy=multi-user.target
-```
-
-`Install` creates the `taskwire` system user/group (`useradd --system`) if missing. Developers who installed the SDK join the `taskwire` group to reach the socket.
-
-### `packaging/service/io.taskwire.agent.plist`
-
-launchd plist template. Populated by `LaunchdManager.Install`.
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>io.taskwire.agent</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{{.BinaryPath}}</string>
-    <string>--config</string>
-    <string>{{.ConfigPath}}</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-</dict>
-</plist>
-```
-
-### `packaging/scripts/build_platforms.sh`
-
-Cross-compiles `taskwire-agent` for all target platforms. Called by CI before building the Python wheel.
-
-| Target | `GOOS` | `GOARCH` | Output |
-|--------|--------|----------|--------|
-| Linux x86-64 | `linux` | `amd64` | `dist/linux_amd64/taskwire-agent` |
-| macOS Intel | `darwin` | `amd64` | `dist/darwin_amd64/taskwire-agent` |
-| macOS Apple Silicon | `darwin` | `arm64` | `dist/darwin_arm64/taskwire-agent` |
-| Windows x86-64 | `windows` | `amd64` | `dist/windows_amd64/taskwire-agent.exe` |
-
-### `packaging/scripts/bundle_wheel.sh`
-
-Copies compiled binaries from `packaging/dist/{platform}/` into `python/taskwire/_bin/{platform}/` so `poetry build` includes them in the wheel.
-
-### `packaging/docker/Dockerfile.agent`
-
-Minimal container image for the agent. Based on `gcr.io/distroless/static`. Copies the pre-built linux/amd64 binary. Exposes gossip port `7946`. Useful for users running the agent in containers rather than as a system service.
-
----
-
-## Python
-
-### `python/taskwire/_bin.py`
-
-Locates the `taskwire-agent` binary bundled inside the wheel. Similar to how Playwright ships browser binaries.
-
-| Function | Signature | Responsibility |
-|----------|-----------|----------------|
-| `binary_path` | `() -> str` | Return absolute path to bundled binary. Resolve `taskwire/_bin/{platform_tag()}/taskwire-agent` (`.exe` on Windows) relative to this file's location. Raise `RuntimeError` with a clear message if not found — indicates a broken or incomplete wheel. |
-| `platform_tag` | `() -> str` | Return `"linux_amd64"`, `"darwin_arm64"`, `"darwin_amd64"`, or `"windows_amd64"` based on `sys.platform` and `platform.machine()`. Raise `RuntimeError` for unsupported platforms. |
-
-The binary is not executed by the Python library at runtime — it is shipped for users who want to run the agent without installing Go. The SDK connects to a running agent; it never starts one.
-
----
-
-### `pyproject.toml` (additions)
-
-```toml
-[tool.poetry.include]
-- "taskwire/_bin/**/*"
-```
-
-Build process: `packaging/scripts/bundle_wheel.sh` runs first, populating `python/taskwire/_bin/`. Then `poetry build` includes those binaries in the wheel.
-
----
-
-## Benchmarks
-
-### `python/tests/benchmark/bench_taskwire.py`
-
-**Baselines must be the honest ones.** Beating `ThreadPoolExecutor` at CPU-bound work on GIL CPython is a strawman — *anything* multi-process wins that. The baselines a skeptical reader will demand:
-
-| Scenario | Baseline | What it proves |
-|----------|----------|----------------|
-| CPU-bound, 1000 tasks | `ProcessPoolExecutor` | taskwire's overhead vs the stdlib's same-machine multi-process answer. Target: within 10% on one node; the win is that the *same code* then scales to N nodes. |
-| CPU-bound, 1000 tasks, 3 nodes | `ProcessPoolExecutor` (1 node — its ceiling) | the actual value proposition: horizontal scale with zero infra |
-| Throughput + latency, small tasks | Celery + Redis (`solo` and `prefork`) | "Celery without the broker" needs numbers vs Celery *with* the broker: submit→result round-trip latency p50/p99, tasks/s sustained |
-| I/O-bound, 200 × sleep(10ms) | `ThreadPoolExecutor` | honesty in the other direction: threads will *win* this on one machine. Publish it anyway and say so — credibility is the currency of a benchmarks page. |
-
-Also benchmark **internally**: pure-Python vs Rust codec/result-server (justifies `native/` in the README), and `persistence: none` vs `wal` submit throughput (documents the durability tax).
-
-```
-CPU task: compute SHA-256 of a 1MB buffer 100 times
-Measure: wall time for all futures to resolve; report p50/p99 per-task latency, not just totals
-Environment: pinned in docs/benchmarks/ (machine type, Python version, GIL vs free-threaded)
-```
-
-Benchmarks run in CI and results committed to `docs/benchmarks/` on each release.
-
----
+- Build reproducible wheels for supported Python/platform combinations and a standalone agent artifact.
+- The Python package locates a bundled agent deterministically or reports a precise installation error; it never downloads binaries during import/install.
+- Pure Python is supported. Any Rust extension is optional and parity-tested.
+- Clean-venv smoke tests install the final wheel, import the SDK, validate config, locate/start the agent, execute a registered task, and shut down cleanly.
+- Produce checksums, signatures/provenance, an SBOM, dependency/license inventory, and vulnerability scan results.
+- Container images run as non-root, use a pinned minimal base, expose no cluster port unless enabled, and persist state/object directories through volumes.
 
 ## Observability
 
-A queue you cannot inspect is a queue you cannot trust in production. Minimum viable surface, all read-only:
+Structured logs include timestamp, level, component, node ID, task ID, owner ID hash, lease/transfer ID where relevant, stable error code, and retryability. Never log payloads, results, encryption keys, owner bearer values, DSNs with credentials, or full tracebacks containing arguments by default.
 
-| Surface | Detail |
-|---------|--------|
-| `taskwire-agent status --json` | Connects to the local socket, sends a STATUS frame (new type `0x0A`, local-socket only — never served on the cluster TCP listener). Returns: queue depth, active leases (task_id, age, attempts), worker PIDs + restart counts, dead-letter count, cluster members + their queue depths. Human-readable table without `--json`. |
-| `taskwire-agent deadletter list / requeue <task_id>` | Inspect and retry dead-lettered tasks. The requeue path is the operator's poison-task recovery story. |
-| Prometheus (optional) | `metrics.listen_addr` in config; when set, expose `/metrics`: `taskwire_queue_depth`, `taskwire_tasks_submitted_total`, `taskwire_tasks_completed_total`, `taskwire_lease_expiries_total`, `taskwire_deadletter_total`, `taskwire_worker_restarts_total`. Counters live in the queue/lease structs from the start — the endpoint just reads them. |
-| Structured logs | `log/slog` JSON in the agent; task_id as a field everywhere a task is touched. The worker logs task start/end/duration at INFO. |
+Metrics include:
 
----
+- task counts/gauges by state, submission/claim/completion latency, attempts, stale leases, dead letters;
+- result replay lag, unacknowledged result count, retention expiry;
+- object bytes/latency/checksum failures/partial cleanup;
+- worker count, restarts, circuit-breaker state, heartbeat failures;
+- IPC connections, malformed frames, rejected/timeout submissions;
+- cluster membership, transfer state/age, auth failures, forwarded completions;
+- Kafka outbox pending age/count, retries, permanent errors, delivery latency.
 
-## Security Hardening (release gate)
+Metrics labels must be bounded; task/owner IDs are never labels. Health endpoints distinguish liveness from readiness and fail readiness on unusable configured state/object storage.
 
-The threat model in one sentence: **the agent executes arbitrary pickled Python from anyone who can reach its socket, and ships pickled callables between nodes.** Every item below follows from that.
+## Security Gate
 
-| Item | Detail |
-|------|--------|
-| Non-root agent | systemd `User=taskwire`; launchd runs per-user. `Install` refuses to write a root-running unit. |
-| Socket permissions | 0660 + `socket_group` (Phase 2) — verified by `test_socket_permissions` in the e2e suite |
-| Cluster auth | gossip `encryption_key` + HMAC handshake on the cluster TCP listener (Phase 5); README's multi-host section makes the key a step 1, not a footnote |
-| Honest docs | A SECURITY.md stating plainly: task payloads are code; the socket is an arbitrary-code-execution boundary; never expose the cluster port to untrusted networks. Users respect software that states its trust model; they abandon software that hides it. |
-| Frame limits | `max_frame_size` enforced on every listener (Phase 1) — fuzz the codec with `go-fuzz`/`atheris` here |
+- Document the Unix socket and cloudpickle trusted-code boundaries prominently.
+- Verify socket ownership/mode and state/object directory permissions at startup; refuse unsafe modes unless an explicit development override exists.
+- Cluster authentication is required by default; rotate-key procedure and mixed-key behavior are documented/tested.
+- Validate paths against traversal/symlink surprises and cap all frame, envelope, object, batch, and metadata sizes.
+- Run fuzzers, dependency/vulnerability scans, secret scanning, static analysis, and a threat-model review covering local privilege, cluster impersonation, object tampering, replay, and denial of service.
+- Publish supported-version and security-reporting policies.
 
----
+## Performance Evidence
 
-## Wheel Building (Rust + Go in one package)
+Benchmark from final installed artifacts, not source-tree shortcuts. Report hardware, OS, Python/Go versions, payload size, durability settings, worker count, run duration, warmup, and confidence ranges.
 
-The wheel carries two native artifacts: the Go agent binary (`_bin/`) and the Rust extension (`_native`). Build matrix via `cibuildwheel` + `maturin`:
+Measure submit-to-result p50/p95/p99, sustained tasks/s, SQLite contention, filesystem object thresholds, worker scaling, reconnect replay, cluster forwarding, and Kafka outbox lag. Compare fairly with Celery plus Redis for representative small and CPU-bound tasks. Performance targets are release criteria only after baselines are recorded; no unmeasured marketing claims.
 
-| Step | Tool |
-|------|------|
-| Cross-compile agent | `build_platforms.sh` (Go — trivial cross-compilation) |
-| Build `_native` per platform/abi3 | `maturin` under `cibuildwheel` (abi3-py311 → one wheel per OS/arch covers CPython ≥ 3.11) |
-| Bundle agent into wheel | `bundle_wheel.sh` before the wheel is finalised |
-| sdist fallback | sdist must install and pass tests with *neither* native artifact — pure-Python codec/result-server/heartbeat, agent downloaded separately or built from source. CI has an explicit `TASKWIRE_PURE_PYTHON=1` job. |
+## Reliability Gate
 
-Free-threaded (`cp313t`) wheels for `_native` ship only when PyO3's free-threaded support is stable for our usage; until then 3.13t users get the (perfectly correct there) pure-Python paths.
-
----
+- Unit, integration, race, fuzz smoke, and clean-wheel suites pass on every supported platform/version.
+- The exact release commit passes the seeded nightly chaos catalog without unexplained retry-to-green.
+- Resource chaos covers ENOSPC, FD exhaustion, slow/corrupt storage, worker memory limits, and shutdown under load.
+- Upgrade/reopen tests cover the previous supported schema/artifact version.
+- Soak tests demonstrate bounded memory, connections, result records, outbox rows, temporary objects, and goroutines/threads.
 
 ## Release Checklist
 
-| Item | Description |
-|------|-------------|
-| **Name consistency check** | Project renamed taskwire → taskwire (old name is OpenStack TaskFlow on PyPI). Before publish: grep the whole repo, systemd/launchd templates, and socket default paths for any leftover `taskwire`; re-verify `taskwire` is still free on PyPI. |
-| Semantic versioning | `0.1.0` for first public release |
-| Go binary versioned | `ldflags -X main.version=$(git describe --tags)` |
-| Python `__version__` | From `pyproject.toml` via `importlib.metadata.version(<package>)` |
-| Supported-Python honesty | Classifiers: 3.11, 3.12, 3.13 (+3.13t experimental). `requires-python = ">=3.11"` — not `>=3.13`, which would exclude ~everyone. |
-| Changelog | Update `CHANGELOG.md` with all Phase 1–7 features |
-| PyPI release | Publish to TestPyPI first; install-test the actual artifacts on clean VMs |
-| GitHub release | Tag `v0.1.0`, attach pre-built agent binaries as release assets |
-| README | Value proposition, quick start (5 lines), *durability and trust-model paragraphs above the fold*, config reference, benchmark table with honest baselines |
-| SECURITY.md | Trust model + disclosure contact |
+1. Freeze protocol/config/event schemas and migration notes.
+2. Run all applicable phase exit gates from a clean checkout.
+3. Build artifacts in CI and run install/E2E tests against those exact artifacts.
+4. Generate SBOM, provenance, signatures, checksums, and scan reports.
+5. Verify examples and configuration reference against the shipped schema.
+6. Publish limitations: at-least-once execution, cancellation boundary, retention, memory-backend loss, pure-Python heartbeat limit, and optional feature status.
+7. Tag only the tested commit and rehearse rollback/yank procedures.
 
----
+## Exit Gate
 
-## Tests
-
-| Test | Asserts |
-|------|---------|
-| `test_install_service_linux` | (CI, Linux) `taskwire-agent install` writes unit file, `systemctl is-active` returns "active" |
-| `test_install_service_macos` | (CI, macOS) `taskwire-agent install` writes plist, `launchctl list` shows pid |
-| `test_binary_path_found` | `_bin.binary_path()` returns a path that exists and is executable |
-| `test_fresh_machine_e2e` | Docker container with only `pip install <package>`. Run `taskwire-agent start`. Submit task. Verify result. |
-| `test_socket_permissions` | Socket file mode is 0660 after agent start |
-| `test_status_json` | `taskwire-agent status --json` returns parseable JSON with queue_depth, workers, leases keys |
-| `bench_cpu_bound` | Single node: within 10% of ProcessPoolExecutor. 3 nodes: > 2× ProcessPoolExecutor's single-node ceiling. |
-
----
-
-## Design Patterns Applied
-
-| Pattern | Where | Why |
-|---------|-------|-----|
-| Strategy | `ServiceManager` interface | Systemd / launchd / Windows Service are interchangeable |
-| Factory | `service.Detect()` | OS detection in one place; callers just call the interface |
-| Template Method | `packaging/service/` templates | Structure is fixed; values injected at install time |
-| Embedded Resources | `//go:embed` pointing into `packaging/service/` | Templates live in one place; binary embeds them at compile time |
+Phase 7 is complete when final artifacts—not developer builds—pass clean-install E2E and the release chaos run, service and upgrade paths are tested, security/observability requirements are met, documentation makes no stronger guarantee than the tests, and optional features are labeled according to their own gates.
