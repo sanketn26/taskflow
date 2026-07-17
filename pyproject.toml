@@ -21,6 +21,13 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 packages = [{include = "taskwire", from = "python"}]
+# The Go agent binary is staged to python/taskwire/bin/ by `make wheel`
+# (never committed — see .gitignore) and declared here so poetry-core bundles
+# it into the wheel. This produces a single-host-platform wheel; multi-platform
+# wheel tagging is a follow-up beyond Phase 0's scope.
+include = [
+  { path = "python/taskwire/bin/taskwire-agent", format = "wheel" },
+]
 
 [tool.poetry.dependencies]
 python = ">=3.11"
@@ -36,6 +43,18 @@ kafka = ["confluent-kafka"]
 pytest = "^8.3"
 pytest-cov = "*"
 ruff = "^0.4"
+build = "^1.2"
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+pythonpath = ["python", "."]
+markers = [
+  "integration: requires a built taskwire-agent binary and drives it end to end",
+  "chaos: injects seeded process/network/storage/resource faults",
+  "cluster: requires a multi-agent cluster topology",
+  "kafka: requires a Kafka broker for delivery-mode tests",
+  "resource: exercises resource-pressure or soak scenarios",
+]
 
 [tool.poetry.urls]
 homepage = "https://github.com/sanketn26/taskwire"

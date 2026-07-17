@@ -121,6 +121,10 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Taskwire build artifacts
+agent/bin/
+python/taskwire/bin/
+
 # Environments
 .env
 .venv
