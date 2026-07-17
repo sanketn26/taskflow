@@ -4,6 +4,12 @@
 
 Turn the validated feature set into supportable, observable, reproducible artifacts. Hardening is cumulative—this phase closes release-wide gaps but does not postpone feature-specific cleanup or tests.
 
+## Phase 0 Baseline and Packaging Debt
+
+Phase 0 established Poetry as the build backend, `pyproject.toml` as the release-version source, root `Makefile` targets, `TASKWIRE_AGENT_PATH` followed by `taskwire/bin/taskwire-agent` lookup, and a wheel that stages `agent/bin/taskwire-agent` into the Python package. Preserve those user-facing contracts.
+
+The Phase 0 wheel is explicitly a single-host build and does not yet provide the final platform-specific wheel matrix/tagging required for release. This phase must make binary-bearing wheels carry correct non-`any` platform tags, build each artifact on its target platform, and test the exact output in a clean environment. It must also reconcile the development invocation `taskwire-agent --config PATH` with `taskwire-agent run --config PATH` by keeping the former as a documented compatibility alias or performing an explicit, tested migration. Extend the existing CI and Make targets rather than creating an unrelated release path.
+
 ## Release Scope
 
 Declare the exact release profile before cutting artifacts:
@@ -12,6 +18,7 @@ Declare the exact release profile before cutting artifacts:
 - Cluster feature: included only if the Phase 5 exit gate is green.
 - Kafka integration: included only if the Phase 6 exit gate is green and remains optional.
 - PostgreSQL/S3: advertised only after their common conformance suites pass; configuration placeholders alone do not imply support.
+- Supported systems for v0.1 are Linux and macOS on the architectures named in the artifact matrix. Windows agent/runtime support is explicitly out of scope; pure Python protocol tests on Windows do not constitute platform support.
 
 ## Service Management
 
@@ -32,6 +39,7 @@ taskwire-agent migrate --config PATH
 ## Packaging
 
 - Build reproducible wheels for supported Python/platform combinations and a standalone agent artifact.
+- Binary-bearing wheels have correct platform tags; no wheel containing `taskwire-agent` is published as `*-any.whl`.
 - The Python package locates a bundled agent deterministically or reports a precise installation error; it never downloads binaries during import/install.
 - Pure Python is supported. Any Rust extension is optional and parity-tested.
 - Clean-venv smoke tests install the final wheel, import the SDK, validate config, locate/start the agent, execute a registered task, and shut down cleanly.
@@ -86,6 +94,7 @@ Measure submit-to-result p50/p95/p99, sustained tasks/s, SQLite contention, file
 5. Verify examples and configuration reference against the shipped schema.
 6. Publish limitations: at-least-once execution, cancellation boundary, retention, memory-backend loss, pure-Python heartbeat limit, and optional feature status.
 7. Tag only the tested commit and rehearse rollback/yank procedures.
+8. Verify `taskwire.__version__`, `taskwire-agent version`, wheel metadata, checksums, and provenance all name the same release version from `pyproject.toml`.
 
 ## Exit Gate
 

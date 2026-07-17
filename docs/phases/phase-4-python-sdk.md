@@ -6,10 +6,16 @@ Provide the public `@task`, `Runtime`, and `TaskFuture` APIs over one local agen
 
 This is the single-node pre-alpha MVP gate.
 
+## Phase 0 Baseline
+
+Add the public SDK to the existing `python/taskwire` package and extend, rather than replace, its current exports. `taskwire.__version__`, `find_agent_binary()`, `AgentNotFoundError`, `TASKWIRE_AGENT_PATH`, and bundled lookup at `taskwire/bin/taskwire-agent` are compatibility contracts established by Phase 0. `Runtime` may accept an explicit socket/config override, but its default local-agent discovery must use that contract and must never build or download an agent.
+
+The build frontend remains the root `Makefile` plus Poetry/`python -m build`. Keep CPython 3.11–3.13 and pure-Python operation green. Extend `make smoke-wheel` from import/version/discovery coverage to a registered-task E2E; run it with the repository unavailable as an import source. SDK tests stay in the existing unit/integration trees and reuse `AgentHarness`, deadline polling, diagnostics, and the seeded chaos timeline.
+
 ## Public API
 
 ```python
-@task(name="reports.generate", version="v3", label="cpu", idempotent=True)
+@task(name="reports.generate", version="v3", labels={"workload": "cpu"}, idempotent=True)
 def generate_report(input_ref): ...
 
 with Runtime() as runtime:
@@ -37,11 +43,11 @@ python/tests/integration/test_sdk_e2e.py
 
 Thread-safe terminal states are result, task failure, cancelled, submission failure, connection failure, and Runtime shutdown. Only the first terminal transition wins. Public methods are `result(timeout=None)`, `exception(timeout=None)`, `done()`, `cancel()`, `cancelled()`, `task_id`, and `owner_id`.
 
-`result()` timeout raises `TimeoutError` without changing task state. `cancel()` sends a request and returns true only for the agent's successful queued-state transition. Duplicate/out-of-order RESULT frames are harmless. User callbacks, if supported, run outside internal locks and cannot kill the receiver loop.
+`result()` timeout raises `TimeoutError` without changing task state. `cancel()` sends a request and returns true only for the agent's successful queued-state transition. Duplicate/out-of-order RESULT frames are harmless. Future completion callbacks are not part of the v0.1 public API.
 
 ## Runtime Identity and Connection
 
-Runtime owns a random persistent 16-byte `owner_id`. Callers may pass a previously persisted owner ID to resume after process restart; it is a bearer capability and must not be logged at info level. The Runtime maintains:
+Runtime owns a random persistent 16-byte `owner_id`. Callers may pass a previously persisted owner ID to resume after process restart; it is a bearer capability and must not be logged at info level. The Runtime registers with `HELLO(role="runtime", owner_id=...)` before any owner-scoped request and maintains:
 
 - `_submitting`: task IDs awaiting SUBMIT ACK.
 - `_pending`: ACKed task IDs with live Futures.
@@ -66,7 +72,11 @@ Fetch and checksum-verify an object-backed result, then deserialize it. Deserial
 
 ### Reattach
 
-`Runtime(owner_id=...)` resumes the owner cursor. `reattach(task_ids)` creates Futures for known outstanding IDs after querying agent state; it does not depend on Kafka. Applications that need cross-process recovery must persist the owner ID and task IDs securely. An expired/acknowledged result may no longer be reattachable after retention.
+`Runtime(owner_id=...)` resumes the owner cursor. `reattach(task_ids)` sends bounded Phase 1 `TASK_QUERY` batches and creates Futures for queued/leased tasks or immediately terminal Futures for retained terminal snapshots. Unknown snapshots raise `TaskNotFoundError` without revealing whether the ID belongs to another owner. It does not depend on Kafka. Applications that need cross-process recovery must persist the owner ID and task IDs securely. An expired/acknowledged result may no longer be reattachable after retention.
+
+### Error mapping
+
+Protocol validation and role errors become `ProtocolError`; `task_conflict` becomes `TaskConflictError`; `task_not_found` becomes `TaskNotFoundError`; `too_late` makes cancellation return `False`; `stale_lease` and `unknown_lease` are worker-internal; `unknown_task` becomes `TaskExecutionError`; codec errors become `SerializationError`; storage-unavailable and retryable transport errors become `AgentUnavailableError`; checksum/storage-consistency errors become `StorageConsistencyError`; shutdown becomes `RuntimeClosedError`; and an unmapped/internal error becomes `TaskwireError` carrying the stable code and retryability. Exception messages never contain serialized arguments or results.
 
 ### Shutdown
 
@@ -84,12 +94,14 @@ Pure Python is mandatory. Native acceleration may optimize framing/heartbeat onl
 - Future first-terminal-wins, timeout, cancellation race, callback isolation, and thread safety.
 - Disconnect before ACK leaves no Future leak and reports unknown acceptance clearly.
 - ACKed submit survives Runtime disconnect; reconnect with owner/cursor resolves it.
+- HELLO registration and same-owner connection replacement preserve result replay without delivering new notifications to the superseded connection.
 - Disconnect after RESULT before ACK causes replay and only one resolution.
 - Duplicate, out-of-order, malformed, corrupt-object, and deserialization-failure results do not kill the dispatcher.
 - Large arguments/results cross the object threshold; explicit `ObjectRef` is preserved.
 - Concurrent submit/result/cancel stress test under the SQLite/filesystem defaults.
 - Clean-wheel E2E on every supported Python version, including pure-Python fallback.
 - Runtime shutdown has no thread, FD, Future, or socket leak.
+- Every Phase 1 error code has an asserted SDK mapping; TASK_QUERY reattach covers active, terminal, expired, unknown, and wrong-owner IDs.
 
 ## Implementation Order
 
@@ -97,7 +109,7 @@ Pure Python is mandatory. Native acceleration may optimize framing/heartbeat onl
 2. Runtime connection/dispatcher and strict SUBMIT ACK lifecycle.
 3. Object upload/download and result mapping.
 4. Reconnect, cursor replay, reattach, cancellation, and shutdown.
-5. Clean-wheel E2E and chaos scenarios.
+5. Extend the existing clean-wheel smoke test to SDK E2E and add seeded chaos scenarios without bypassing packaged agent discovery.
 
 ## Exit Gate
 

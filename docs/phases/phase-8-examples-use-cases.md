@@ -4,6 +4,12 @@
 
 Ship executable documentation that teaches the supported architecture and proves the released artifacts work in realistic scenarios. Examples use registered task identity, agent-relayed results, SQLite/filesystem defaults, and the shipped configuration schema.
 
+## Phase 0 Baseline
+
+All examples use the repository's established root commands and artifact contract: build with `make wheel`, install the produced wheel into a clean environment, and let `find_agent_binary()` locate the bundled agent unless an example intentionally demonstrates `TASKWIRE_AGENT_PATH`. Examples must not copy binaries into ad hoc locations, compile on import, or add the checkout to `PYTHONPATH`.
+
+Automated example tests reuse `AgentHarness`, `wait_until`, failure diagnostics, and `TASKWIRE_CHAOS_SEED`, and use the existing `integration`, `chaos`, `cluster`, `kafka`, and `resource` markers. Version output shown in documentation must be derived from the installed package rather than hard-coded.
+
 ## Deliverables
 
 ```text
@@ -31,29 +37,74 @@ ipc:
   submit_ack_timeout_ms: 5000
   reconnect_backoff_ms: 250
   result_batch_size: 100
+  task_query_batch_size: 100
+  read_timeout_ms: 30000
+  write_timeout_ms: 30000
+  object_transfer_timeout_ms: 60000
+  object_chunk_bytes: 262144
+  max_active_transfers: 4
+  max_transfer_bytes: 1073741824
+  write_queue_size: 256
 queue:
   max_attempts: 5
   max_frame_size_mb: 16
   lease_ttl_ms: 30000
+  reaper_interval_ms: 1000
 storage:
-  state: {type: sqlite, dsn: "./data/state.db"}
+  state: {type: sqlite, dsn: "./data/state.db", sqlite_busy_timeout_ms: 5000, sqlite_synchronous: FULL}
   objects:
     default: local
     inline_threshold_bytes: 65536
     result_retention_seconds: 86400
+    sweep_interval_ms: 60000
+    sweep_batch_size: 100
     stores:
       local: {type: filesystem, root: "./data/objects"}
 tasks:
   allow_inline_functions: false
+  import_modules: ["quickstart.tasks"]
 workers:
   count: 2
+  python_executable: "python3"
+  working_directory: "."
+  environment: {}
   shutdown_grace_ms: 30000
+  restart_backoff_min_ms: 250
+  restart_backoff_max_ms: 30000
+  restart_limit: 5
+  restart_window_seconds: 60
   labels: {workload: general}
   resources: {max_memory_mb: 2048, max_cpu_percent: 80}
-cluster: {enabled: false, allow_insecure: false, node_name: "", bind_addr: "0.0.0.0:7946", advertise_addr: "", task_port: 7947, seeds: [], mdns: true, encryption_key: ""}
+cluster:
+  enabled: false
+  allow_insecure: false
+  node_name: ""
+  bind_addr: "0.0.0.0:7946"
+  advertise_addr: ""
+  task_port: 7947
+  seeds: []
+  mdns: true
+  encryption_key: ""
+  auth_clock_skew_ms: 30000
+  auth_timeout_ms: 5000
+  replay_cache_size: 4096
+  transfer_timeout_ms: 30000
+  ownership_timeout_ms: 120000
+  steal_batch_size: 10
 routing: {rules: []}
 integrations:
-  kafka: {enabled: false, brokers: [], topic: taskwire-results, delivery_timeout_ms: 30000}
+  kafka:
+    enabled: false
+    brokers: []
+    topic: taskwire-results
+    delivery_timeout_ms: 30000
+    batch_size: 100
+    max_in_flight: 10
+    retry_backoff_ms: 1000
+    shutdown_grace_ms: 10000
+    preserve_owner_order: true
+    max_event_bytes: 1048576
+    published_retention_seconds: 604800
 metrics: {listen_addr: ""}
 ```
 

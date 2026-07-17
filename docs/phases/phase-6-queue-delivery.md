@@ -4,6 +4,12 @@
 
 Add Kafka as an optional integration fed from already-committed terminal result records. Kafka does not replace agent-relayed Runtime results, change worker behavior, or become the source of truth.
 
+## Phase 0 Baseline
+
+Kafka remains an optional Python dependency through the existing `kafka` extra and must not enter the default install, import path, agent startup path, or clean-wheel smoke test. Agent-side Kafka code stays behind an adapter boundary so `make build-agent`, `make unit`, and the default integration suite remain broker-free at runtime while producing the same agent binary used when Kafka is enabled.
+
+Use the existing `kafka` pytest marker and `integrations.kafka` configuration namespace. Kafka-enabled artifact tests start from the same built wheel and packaged `taskwire-agent` used by the Phase 0 smoke path; they must not substitute source-tree imports or a special agent binary.
+
 ## Testable Outcome
 
 When enabled, each committed terminal result is published durably and idempotently by the origin agent through an outbox. Broker outages do not roll back task completion or block Runtime cursor replay; publication resumes after restart. Consumers can use Kafka for downstream workflows without accessing worker payload paths or another owner's results accidentally.
@@ -52,6 +58,10 @@ agent/internal/config/config.go
 python/taskwire/integrations/kafka.py   # optional consumer helper only
 ```
 
+The Go agent owns a small producer interface (`Produce`, delivery-report channel, `Close`) implemented with `github.com/twmb/franz-go`, pinned in `go.mod`; tests use a fake implementation. Kafka code is compiled into the normal agent but creates no producer, goroutine, DNS lookup, or broker connection while disabled. The Python `kafka` extra is only for the optional consumer helper and is not the agent publisher dependency.
+
+Each outbox row persists `event_id`, task/owner/cursor, encoded event bytes, task key, state (`pending`, `leased`, `published`, `dead_lettered`), lease owner/expiry, attempts, next-attempt time, last stable error code, created time, and published time. The event ID and encoded bytes are created in the same transaction as the terminal result and never regenerated on retry. Permanent errors remain operator-visible until an explicit administrative dead-letter action; retention never silently deletes pending/leased rows.
+
 Requirements:
 
 - Claim outbox rows with a publisher lease so concurrent loops do not publish the same row unnecessarily.
@@ -60,8 +70,8 @@ Requirements:
 - Bound batch size, in-flight messages, delivery timeout, retry backoff, and shutdown drain.
 - Retry retriable errors indefinitely within retention; surface permanent/serialization errors in status and metrics without dropping the row.
 - On restart, release expired publisher leases and resume pending rows.
-- Define an outbox retention/dead-letter operator policy; never silently discard unpublished events.
-- Kafka dependencies are optional and absent from default builds/tests.
+- Published rows are retained for the configured `published_retention_seconds`; permanent rows require the explicit `taskwire-agent kafka dead-letter --event-id` operator command and are never silently discarded.
+- Kafka is disabled in default configuration and its integration dependencies are absent from the default Python test environment; the normal Go agent artifact contains the dormant producer adapter.
 
 ## Consumer Helper
 
@@ -86,7 +96,8 @@ No `result_delivery.mode`, callback address, per-Runtime broadcast consumer grou
 1. Versioned event codec and outbox state-store operations.
 2. Publisher with a fake broker and delivery-report tests.
 3. Optional Kafka client adapter and testcontainer outage/recovery tests.
-4. Status/metrics, retention tooling, and optional consumer helper.
+4. Status/metrics, retention tooling, and optional consumer helper behind the existing `kafka` extra.
+5. Re-run the default artifact and integration suites with Kafka dependencies absent.
 
 ## Exit Gate
 

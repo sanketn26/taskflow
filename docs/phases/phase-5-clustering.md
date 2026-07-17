@@ -6,6 +6,12 @@ Add authenticated discovery, capability-aware routing, forwarding, and work stea
 
 Clustering is a post-MVP feature gate. Membership suspicion is not proof of death, so at-least-once execution may create duplicates during partitions; lease fencing and origin ownership prevent conflicting terminal state.
 
+## Phase 0 Baseline
+
+Clustering extends the same packaged `taskwire-agent`; it is not a separate binary or Python service. Multi-agent tests compose multiple instances of the existing `AgentHarness`, each with an isolated base directory, socket, logs, state, and objects. `harness/cluster.py` owns that composition and `harness/proxy.py` adds network faults while all readiness uses `wait_until` and all fault actions are recorded in each run's seeded `ChaosTimeline`.
+
+Use the existing `cluster` and `chaos` pytest markers. Cluster-disabled tests remain part of the infrastructure-free integration suite, and the Phase 0 wheel/discovery/version tests plus the complete single-node suite must stay green.
+
 ## Testable Outcome
 
 Multiple agents discover one another, authenticate cluster traffic, route tasks by labels, balance eligible queued work, return fenced result references to the origin, recover forwarding state across restarts, and converge after partitions without losing acknowledged tasks.
@@ -18,6 +24,8 @@ Multiple agents discover one another, authenticate cluster traffic, route tasks 
 - Gossip uses memberlist encryption. Every task-channel connection also uses mutual challenge/response HMAC with nonces, timestamp skew bounds, and replay protection.
 - The cluster listener accepts only cluster message types; `STATUS`, Runtime result resume, and local object-path operations are never exposed remotely.
 - Frame and request limits apply before authentication and before allocation.
+
+The task-channel handshake is `AUTH_CHALLENGE {node_name, nonce: binary(32), unix_ms: int64}` followed by `AUTH_RESPONSE {node_name, peer_nonce: binary(32), nonce: binary(32), unix_ms: int64, mac: binary(32)}` and a reciprocal response. The HMAC-SHA256 input is the protocol version, both length-prefixed node names, both nonces in challenge order, and both big-endian timestamps. Each side verifies advertised membership identity, constant-time MAC equality, `cluster.auth_clock_skew_ms`, and a bounded nonce replay cache before accepting Phase 1 frames. Authentication messages use a cluster transport preface and are not valid on local IPC; no unauthenticated payload is decoded beyond its fixed maximum.
 
 ## Ownership Model
 
@@ -74,6 +82,8 @@ harness/cluster.py
 harness/proxy.py
 ```
 
+Phase 5 implements the cluster authentication, replay, transfer, ownership, and steal limits already frozen in the Phase 1 configuration. It does not alter the Phase 1 base frame or message schemas.
+
 ## Required Tests
 
 - Cluster disabled opens no ports; secure mode rejects missing/wrong keys and replayed authentication.
@@ -94,7 +104,7 @@ harness/proxy.py
 3. Object transfer and idempotent foreign import.
 4. Scheduler/routing and one-hop stealing.
 5. Remote completion relay and origin result replay.
-6. Restart, partition, and churn chaos suite.
+6. Restart, partition, and churn chaos suite built from composed `AgentHarness` instances and the existing seeded timeline.
 
 ## Exit Gate
 
