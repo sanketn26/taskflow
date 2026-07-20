@@ -1,6 +1,9 @@
 package protocol
 
-import "bytes"
+import (
+	"bytes"
+	"crypto/sha256"
+)
 
 // ConnectionState is the mutable per-connection state owned by the
 // caller (one per socket).
@@ -97,7 +100,7 @@ func (Session) Authorize(state *ConnectionState, messageType MessageType) error 
 	return nil
 }
 
-func (Session) RegisterTasks(state *ConnectionState, registration *TaskRegistration, fingerprint []byte) error {
+func (Session) RegisterTasks(state *ConnectionState, registration *TaskRegistration) error {
 	if state.Role != "worker" {
 		return NewDecodeError(RoleForbidden, "only workers register tasks")
 	}
@@ -117,14 +120,19 @@ func (Session) RegisterTasks(state *ConnectionState, registration *TaskRegistrat
 	if registration.Generation < state.CapabilityGeneration {
 		return NewDecodeError(TaskConflict, "stale capability generation")
 	}
+	encoded, err := registration.Encode()
+	if err != nil {
+		return err
+	}
+	fingerprint := sha256.Sum256(encoded)
 	if registration.Generation == state.CapabilityGeneration {
-		if bytes.Equal(fingerprint, state.CapabilityFingerprint) {
+		if bytes.Equal(fingerprint[:], state.CapabilityFingerprint) {
 			return nil
 		}
 		return NewDecodeError(TaskConflict, "conflicting capability generation")
 	}
 	state.CapabilityGeneration = registration.Generation
-	state.CapabilityFingerprint = append([]byte(nil), fingerprint...)
+	state.CapabilityFingerprint = append([]byte(nil), fingerprint[:]...)
 	return nil
 }
 

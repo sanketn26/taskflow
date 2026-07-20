@@ -4,6 +4,7 @@ import pytest
 
 from taskwire.protocol.errors import ProtocolDecodeError
 from taskwire.protocol.frames import MessageType
+from taskwire.protocol.messages import TaskCapability, TaskRegistration
 from taskwire.protocol.session import ConnectionState, OwnerRegistry, Session
 
 OWNER = b"\x01" * 16
@@ -102,29 +103,14 @@ def test_worker_must_register_compatible_capabilities_before_pull():
     with pytest.raises(ProtocolDecodeError) as exc:
         session.authorize(state, MessageType.PULL)
     assert exc.value.code == "not_registered"
-    session.register_tasks(
-        state,
-        worker_id="w",
-        generation=1,
-        fingerprint=b"one",
-        invocations_and_codecs=[("value", ["msgpack"])],
+    registration = TaskRegistration(
+        "w", 1, [TaskCapability("task", "1", "value", ["msgpack"])]
     )
+    session.register_tasks(state, registration)
     session.authorize(state, MessageType.PULL)
-    session.register_tasks(
-        state,
-        worker_id="w",
-        generation=1,
-        fingerprint=b"one",
-        invocations_and_codecs=[("value", ["msgpack"])],
-    )
+    session.register_tasks(state, registration)
     with pytest.raises(ProtocolDecodeError) as exc:
-        session.register_tasks(
-            state,
-            worker_id="w",
-            generation=1,
-            fingerprint=b"different",
-            invocations_and_codecs=[],
-        )
+        session.register_tasks(state, TaskRegistration("w", 1, []))
     assert exc.value.code == "task_conflict"
 
 
@@ -142,10 +128,9 @@ def test_non_python_worker_rejects_python_only_capability():
     with pytest.raises(ProtocolDecodeError) as exc:
         session.register_tasks(
             state,
-            worker_id="w",
-            generation=1,
-            fingerprint=b"x",
-            invocations_and_codecs=[("python_args", ["cloudpickle"])],
+            TaskRegistration(
+                "w", 1, [TaskCapability("task", "1", "python_args", ["cloudpickle"])]
+            ),
         )
     assert exc.value.code == "task_conflict"
 

@@ -335,3 +335,36 @@ func TestEncodePayloadRejectsWrongTypeForMessage(t *testing.T) {
 		t.Fatalf("got %v, want invalid_message", err)
 	}
 }
+
+func TestDeclaredCollectionCountsRejectedBeforeAllocation(t *testing.T) {
+	for name, payload := range map[string][]byte{
+		"array32": {0xdd, 0xff, 0xff, 0xff, 0xff},
+		"map32":   {0xdf, 0xff, 0xff, 0xff, 0xff},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := unpackStrict(payload); err == nil {
+				t.Fatal("expected impossible collection count to be rejected")
+			}
+		})
+	}
+}
+
+func TestWorkerCodecValidationMatchesPython(t *testing.T) {
+	for _, codecs := range [][]string{{""}, {"msgpack", "msgpack"}} {
+		hello := NewWorkerHello("w", "go", "1.26", "0.1.0", codecs)
+		if _, err := hello.Encode(); err == nil {
+			t.Fatalf("expected codecs %v to be rejected", codecs)
+		}
+		capability := TaskCapability{TaskName: "t", TaskVersion: "1", Invocation: "value", Codecs: codecs}
+		if _, err := capability.Encode(); err == nil {
+			t.Fatalf("expected task codecs %v to be rejected", codecs)
+		}
+	}
+}
+
+func TestEncodePayloadRejectsInvalidNestedObjectRef(t *testing.T) {
+	req := &ObjectGetRequest{TransferID: make([]byte, 16), Object: &ObjectRef{Store: "s", Key: "k", Codec: "bytes", SHA256: []byte{1}}}
+	if _, err := EncodePayload(MessageObjectGet, req); err == nil {
+		t.Fatal("expected invalid checksum length to be rejected")
+	}
+}

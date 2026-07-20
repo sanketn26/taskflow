@@ -9,6 +9,7 @@ transition outputs Phase 2 needs to implement it.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -21,6 +22,7 @@ from taskwire.protocol.errors import (
     ProtocolDecodeError,
 )
 from taskwire.protocol.frames import MessageType
+from taskwire.protocol.messages import TaskRegistration
 
 # Message types allowed for each registered role, once past HELLO.
 _RUNTIME_MESSAGES = frozenset(
@@ -117,25 +119,23 @@ class Session:
     def register_tasks(
         self,
         state: ConnectionState,
-        *,
-        worker_id: str,
-        generation: int,
-        fingerprint: bytes,
-        invocations_and_codecs: list[tuple[str, list[str]]],
+        registration: TaskRegistration,
     ) -> None:
         if state.role != "worker":
             raise ProtocolDecodeError(ROLE_FORBIDDEN, "only workers register tasks")
-        if worker_id != state.worker_id:
+        if registration.worker_id != state.worker_id:
             raise ProtocolDecodeError(OWNER_MISMATCH, "worker_id does not match HELLO")
-        for invocation, codecs in invocations_and_codecs:
-            if not set(codecs).issubset(state.codecs):
+        for task in registration.tasks:
+            if not set(task.codecs).issubset(state.codecs):
                 raise ProtocolDecodeError(TASK_CONFLICT, "task codec absent from HELLO")
             if state.runtime != "python" and (
-                invocation == "python_args" or "cloudpickle" in codecs
+                task.invocation == "python_args" or "cloudpickle" in task.codecs
             ):
                 raise ProtocolDecodeError(
                     TASK_CONFLICT, "runtime cannot provide Python-only capability"
                 )
+        fingerprint = hashlib.sha256(registration.to_bytes()).digest()
+        generation = registration.generation
         if generation < state.capability_generation:
             raise ProtocolDecodeError(TASK_CONFLICT, "stale capability generation")
         if generation == state.capability_generation:

@@ -228,6 +228,22 @@ def test_worker_hello_and_task_registration_round_trip():
     )
 
 
+def test_schema_construction_rejects_invalid_encoder_values():
+    with pytest.raises(ProtocolDecodeError):
+        m.ObjectRef(store="s", key="k", size=0, sha256=b"short", codec="bytes")
+    with pytest.raises(ProtocolDecodeError):
+        m.Hello(role="runtime", owner_id=b"short")
+    with pytest.raises(ProtocolDecodeError):
+        m.Hello(
+            role="worker",
+            worker_id="w",
+            runtime="go",
+            runtime_version="1.26",
+            sdk_version="0.1.0",
+            codecs=["msgpack", "msgpack"],
+        )
+
+
 # -- union validation --------------------------------------------------
 
 

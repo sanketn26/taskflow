@@ -65,6 +65,23 @@ func TestDuplicateInFlightRequestRejected(t *testing.T) {
 	}
 }
 
+func TestCapabilityFingerprintIsDerivedFromRegistration(t *testing.T) {
+	s := Session{}
+	state := NewConnectionState()
+	s.RegisterWorker(state, NewWorkerHello("w", "nodejs", "22", "0.1.0", []string{"msgpack"}))
+	first := &TaskRegistration{WorkerID: "w", Generation: 1, Tasks: []TaskCapability{{TaskName: "a", TaskVersion: "1", Invocation: "value", Codecs: []string{"msgpack"}}}}
+	if err := s.RegisterTasks(state, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterTasks(state, first); err != nil {
+		t.Fatalf("identical registration should be idempotent: %v", err)
+	}
+	changed := &TaskRegistration{WorkerID: "w", Generation: 1, Tasks: []TaskCapability{{TaskName: "b", TaskVersion: "1", Invocation: "value", Codecs: []string{"msgpack"}}}}
+	if err := s.RegisterTasks(state, changed); err == nil {
+		t.Fatal("changed registration with same generation must conflict")
+	}
+}
+
 func TestCompletionFreesRequestID(t *testing.T) {
 	s := Session{}
 	state := NewConnectionState()

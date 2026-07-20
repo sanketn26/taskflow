@@ -321,6 +321,18 @@ class ObjectRef:
     sha256: bytes
     codec: str
 
+    def __post_init__(self) -> None:
+        if not self.store or not self.key or not self.codec:
+            raise ProtocolDecodeError(
+                INVALID_MESSAGE, "ObjectRef strings must be non-empty"
+            )
+        if isinstance(self.size, bool) or not 0 <= self.size < (1 << 64):
+            raise ProtocolDecodeError(INVALID_MESSAGE, "ObjectRef.size out of range")
+        if not isinstance(self.sha256, bytes) or len(self.sha256) != 32:
+            raise ProtocolDecodeError(
+                INVALID_MESSAGE, "ObjectRef.sha256 must be 32 bytes"
+            )
+
     def to_bytes(self) -> bytes:
         return _pack_map(
             {
@@ -432,6 +444,8 @@ class Hello:
         )
         if self.role == "runtime" and (
             self.owner_id is None
+            or not isinstance(self.owner_id, bytes)
+            or len(self.owner_id) != 16
             or self.worker_id is not None
             or any(v is not None for v in worker_fields)
         ):
@@ -440,6 +454,7 @@ class Hello:
             )
         if self.role == "worker" and (
             self.worker_id is None
+            or not self.worker_id
             or self.owner_id is not None
             or self.runtime not in _WORKER_RUNTIMES
             or not self.runtime_version
@@ -511,6 +526,14 @@ class Hello:
 class PullRequest:
     worker_id: str
     capability_generation: int
+
+    def __post_init__(self) -> None:
+        if (
+            not self.worker_id
+            or isinstance(self.capability_generation, bool)
+            or not 0 <= self.capability_generation < (1 << 64)
+        ):
+            raise ProtocolDecodeError(INVALID_MESSAGE, "invalid PullRequest")
 
     def to_bytes(self) -> bytes:
         return _pack_map(
@@ -584,7 +607,11 @@ class TaskRegistration:
     tasks: list[TaskCapability]
 
     def __post_init__(self) -> None:
-        if self.generation < 1:
+        if (
+            not self.worker_id
+            or isinstance(self.generation, bool)
+            or not 1 <= self.generation < (1 << 64)
+        ):
             raise ProtocolDecodeError(
                 INVALID_MESSAGE, "registration generation must be positive"
             )
@@ -712,6 +739,26 @@ class TaskEnvelope:
     labels: dict[str, str]
     idempotent: bool
     submitted_at_unix_ms: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.owner_id, bytes) or len(self.owner_id) != 16:
+            raise ProtocolDecodeError(
+                INVALID_MESSAGE, "TaskEnvelope.owner_id must be 16 bytes"
+            )
+        if (
+            not self.task_name
+            or not self.task_version
+            or self.invocation not in _INVOCATIONS
+        ):
+            raise ProtocolDecodeError(
+                INVALID_MESSAGE, "invalid TaskEnvelope identity or invocation"
+            )
+        if isinstance(self.submitted_at_unix_ms, bool) or not -(
+            1 << 63
+        ) <= self.submitted_at_unix_ms < (1 << 63):
+            raise ProtocolDecodeError(
+                INVALID_MESSAGE, "submitted_at_unix_ms out of range"
+            )
 
     def to_bytes(self) -> bytes:
         return _pack_map(
@@ -1356,7 +1403,12 @@ def encode_payload(message_type: MessageType, value: Any) -> bytes:
             INVALID_MESSAGE,
             f"{type(value).__name__} is not valid for {message_type.name}",
         )
-    return value.to_bytes()
+    payload = value.to_bytes()
+    # The encoder and decoder share the same strict schema contract. A
+    # round-trip validation prevents locally constructed dataclasses from
+    # emitting bytes that the peer would reject.
+    decode_payload(message_type, payload)
+    return payload
 
 
 _DECODE_KEYSETS: dict[

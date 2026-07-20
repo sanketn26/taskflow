@@ -221,6 +221,9 @@ func WriteFrame(w io.Writer, frame Frame, maxPayloadBytes uint32) error {
 		if err != nil {
 			return err
 		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
 		total += n
 	}
 	return nil

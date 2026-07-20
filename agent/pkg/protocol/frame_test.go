@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"testing"
 )
@@ -9,6 +10,10 @@ import (
 const maxPayload = 16 * 1024 * 1024
 
 var zeroID [16]byte
+
+type zeroWriter struct{}
+
+func (zeroWriter) Write([]byte) (int, error) { return 0, nil }
 
 func TestHeaderIsExactly31Bytes(t *testing.T) {
 	frame := Frame{Version: 1, MessageType: MessagePull, TaskID: zeroID, RequestID: 1, Flags: FlagNone, Payload: nil}
@@ -33,6 +38,13 @@ func TestRoundTripWithPayload(t *testing.T) {
 	}
 	if decoded.MessageType != frame.MessageType || decoded.RequestID != frame.RequestID || !bytes.Equal(decoded.Payload, frame.Payload) {
 		t.Fatalf("round trip mismatch: %+v vs %+v", decoded, frame)
+	}
+}
+
+func TestWriteFrameRejectsZeroProgressWriter(t *testing.T) {
+	frame := Frame{Version: ProtocolVersion, MessageType: MessageStatus, Payload: []byte{0x80}}
+	if err := WriteFrame(zeroWriter{}, frame, 1024); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("got %v, want io.ErrShortWrite", err)
 	}
 }
 

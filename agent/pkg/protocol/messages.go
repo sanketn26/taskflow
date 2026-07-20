@@ -196,6 +196,13 @@ type ObjectRef struct {
 	Codec  string
 }
 
+func (o *ObjectRef) Validate() error {
+	if o == nil || o.Store == "" || o.Key == "" || o.Codec == "" || len(o.SHA256) != 32 {
+		return NewDecodeError(InvalidMessage, "invalid ObjectRef")
+	}
+	return nil
+}
+
 func (o *ObjectRef) Encode() []byte {
 	return packMap([]mapField{
 		{"store", packStr(o.Store)},
@@ -279,6 +286,12 @@ func (v *ValueRef) Validate() error {
 	if hasInline == hasObject {
 		return NewDecodeError(InvalidMessage, "ValueRef requires exactly one of inline or object")
 	}
+	if hasInline && v.Codec == "" {
+		return NewDecodeError(InvalidMessage, "ValueRef.inline requires codec")
+	}
+	if hasObject {
+		return v.Object.Validate()
+	}
 	return nil
 }
 
@@ -354,15 +367,22 @@ func (h *Hello) Validate() error {
 	}
 	switch h.Role {
 	case "runtime":
-		if h.OwnerID == nil || h.WorkerID != "" || h.Runtime != "" || len(h.Codecs) != 0 {
+		if len(h.OwnerID) != 16 || h.WorkerID != "" || h.Runtime != "" || h.RuntimeVersion != "" || h.SDKVersion != "" || len(h.Codecs) != 0 {
 			return NewDecodeError(InvalidMessage, "runtime Hello requires only owner_id")
 		}
 	case "worker":
 		if h.WorkerID == "" || h.OwnerID != nil || !workerRuntimes[h.Runtime] || h.RuntimeVersion == "" || h.SDKVersion == "" || len(h.Codecs) == 0 {
 			return NewDecodeError(InvalidMessage, "worker Hello requires identity, runtime, versions, and codecs")
 		}
+		seen := make(map[string]bool, len(h.Codecs))
+		for _, codec := range h.Codecs {
+			if codec == "" || seen[codec] {
+				return NewDecodeError(InvalidMessage, "worker Hello codecs must be non-empty and unique")
+			}
+			seen[codec] = true
+		}
 	case "admin":
-		if h.OwnerID != nil || h.WorkerID != "" || h.Runtime != "" || len(h.Codecs) != 0 {
+		if h.OwnerID != nil || h.WorkerID != "" || h.Runtime != "" || h.RuntimeVersion != "" || h.SDKVersion != "" || len(h.Codecs) != 0 {
 			return NewDecodeError(InvalidMessage, "admin Hello takes no extra fields")
 		}
 	}
@@ -508,12 +528,29 @@ type TaskCapability struct {
 	Codecs      []string
 }
 
-func (t TaskCapability) Encode() []byte {
+func (t TaskCapability) Validate() error {
+	if t.TaskName == "" || t.TaskVersion == "" || !invocationProfiles[t.Invocation] || len(t.Codecs) == 0 {
+		return NewDecodeError(InvalidMessage, "invalid task capability")
+	}
+	seen := make(map[string]bool, len(t.Codecs))
+	for _, codec := range t.Codecs {
+		if codec == "" || seen[codec] {
+			return NewDecodeError(InvalidMessage, "task capability codecs must be non-empty and unique")
+		}
+		seen[codec] = true
+	}
+	return nil
+}
+
+func (t TaskCapability) Encode() ([]byte, error) {
+	if err := t.Validate(); err != nil {
+		return nil, err
+	}
 	items := make([][]byte, len(t.Codecs))
 	for i, v := range t.Codecs {
 		items[i] = packStr(v)
 	}
-	return packMap([]mapField{{"task_name", packStr(t.TaskName)}, {"task_version", packStr(t.TaskVersion)}, {"invocation", packStr(t.Invocation)}, {"codecs", packArray(items)}})
+	return packMap([]mapField{{"task_name", packStr(t.TaskName)}, {"task_version", packStr(t.TaskVersion)}, {"invocation", packStr(t.Invocation)}, {"codecs", packArray(items)}}), nil
 }
 func DecodeTaskCapability(m map[string]interface{}) (TaskCapability, error) {
 	if err := noUnknown(m, setOf("task_name", "task_version", "invocation", "codecs")); err != nil {
@@ -549,7 +586,11 @@ func DecodeTaskCapability(m map[string]interface{}) (TaskCapability, error) {
 	if n == "" || v == "" || len(codecs) == 0 {
 		return TaskCapability{}, NewDecodeError(InvalidMessage, "invalid task capability")
 	}
-	return TaskCapability{n, v, inv, codecs}, nil
+	capability := TaskCapability{n, v, inv, codecs}
+	if e := capability.Validate(); e != nil {
+		return TaskCapability{}, e
+	}
+	return capability, nil
 }
 
 type TaskRegistration struct {
@@ -558,12 +599,37 @@ type TaskRegistration struct {
 	Tasks      []TaskCapability
 }
 
-func (t *TaskRegistration) Encode() []byte {
+func (t *TaskRegistration) Validate() error {
+	if t == nil || t.WorkerID == "" || t.Generation == 0 {
+		return NewDecodeError(InvalidMessage, "invalid task registration")
+	}
+	seen := map[string]bool{}
+	for _, task := range t.Tasks {
+		if err := task.Validate(); err != nil {
+			return err
+		}
+		key := task.TaskName + "\x00" + task.TaskVersion
+		if seen[key] {
+			return NewDecodeError(InvalidMessage, "duplicate task capability")
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+func (t *TaskRegistration) Encode() ([]byte, error) {
+	if err := t.Validate(); err != nil {
+		return nil, err
+	}
 	items := make([][]byte, len(t.Tasks))
 	for i := range t.Tasks {
-		items[i] = t.Tasks[i].Encode()
+		encoded, err := t.Tasks[i].Encode()
+		if err != nil {
+			return nil, err
+		}
+		items[i] = encoded
 	}
-	return packMap([]mapField{{"worker_id", packStr(t.WorkerID)}, {"generation", packU64(t.Generation)}, {"tasks", packArray(items)}})
+	return packMap([]mapField{{"worker_id", packStr(t.WorkerID)}, {"generation", packU64(t.Generation)}, {"tasks", packArray(items)}}), nil
 }
 
 var taskRegistrationKeys = setOf("worker_id", "generation", "tasks")
@@ -607,7 +673,11 @@ func DecodeTaskRegistration(m map[string]interface{}) (*TaskRegistration, error)
 		}
 		seen[key] = true
 	}
-	return &TaskRegistration{w, g, tasks}, nil
+	registration := &TaskRegistration{w, g, tasks}
+	if e := registration.Validate(); e != nil {
+		return nil, e
+	}
+	return registration, nil
 }
 
 type TaskQuery struct {
@@ -2035,6 +2105,17 @@ func DecodeStatusRequest(m map[string]interface{}) (*StatusRequest, error) {
 // EncodePayload renders value's canonical bytes for messageType, or
 // returns an InvalidMessage error if value's type is not valid for it.
 func EncodePayload(messageType MessageType, value interface{}) ([]byte, error) {
+	payload, err := encodePayloadUnchecked(messageType, value)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := DecodePayload(messageType, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func encodePayloadUnchecked(messageType MessageType, value interface{}) ([]byte, error) {
 	switch messageType {
 	case MessageSubmit:
 		switch v := value.(type) {
@@ -2118,7 +2199,7 @@ func EncodePayload(messageType MessageType, value interface{}) ([]byte, error) {
 		}
 	case MessageRegisterTasks:
 		if v, ok := value.(*TaskRegistration); ok {
-			return v.Encode(), nil
+			return v.Encode()
 		}
 	}
 	return nil, NewDecodeError(InvalidMessage, "value type is not valid for "+messageType.String())

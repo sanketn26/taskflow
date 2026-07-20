@@ -430,6 +430,11 @@ func decodeValue(c *byteCursor) (interface{}, error) {
 }
 
 func decodeArray(c *byteCursor, n int) ([]interface{}, error) {
+	// Every msgpack value occupies at least one byte. Reject impossible
+	// declared counts before using the untrusted count as an allocation hint.
+	if n < 0 || n > len(c.data)-c.pos {
+		return nil, NewDecodeError(MalformedPayload, "array element count exceeds remaining payload")
+	}
 	out := make([]interface{}, 0, n)
 	for i := 0; i < n; i++ {
 		v, err := decodeValue(c)
@@ -442,6 +447,11 @@ func decodeArray(c *byteCursor, n int) ([]interface{}, error) {
 }
 
 func decodeMap(c *byteCursor, n int) (map[string]interface{}, error) {
+	// Each entry requires at least a one-byte key and one-byte value. This
+	// prevents tiny map32 inputs from requesting multi-billion-entry maps.
+	if n < 0 || n > (len(c.data)-c.pos)/2 {
+		return nil, NewDecodeError(MalformedPayload, "map entry count exceeds remaining payload")
+	}
 	out := make(map[string]interface{}, n)
 	for i := 0; i < n; i++ {
 		kv, err := decodeValue(c)

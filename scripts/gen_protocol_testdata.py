@@ -540,4 +540,25 @@ missing_field_frame = (
 )
 write_invalid("missing_required_key", missing_field_frame, "invalid_message")
 
+# Worker HELLO codecs must be non-empty and unique in every implementation.
+duplicate_codec_payload = m._pack_map(
+    {
+        "role": m._pack_str("worker"),
+        "worker_id": m._pack_str(worker_id_str),
+        "runtime": m._pack_str("go"),
+        "runtime_version": m._pack_str("1.26"),
+        "sdk_version": m._pack_str("0.1.0"),
+        "codecs": m._pack_array([m._pack_str("msgpack"), m._pack_str("msgpack")]),
+    }
+)
+duplicate_codec_frame = (
+    bytes([1, MessageType.HELLO.value])
+    + ZERO_ID
+    + (1).to_bytes(8, "big")
+    + bytes([0])
+    + len(duplicate_codec_payload).to_bytes(4, "big")
+    + duplicate_codec_payload
+)
+write_invalid("duplicate_worker_codec", duplicate_codec_frame, "invalid_message")
+
 print(f"wrote invalid cases to {invalid_dir}")
