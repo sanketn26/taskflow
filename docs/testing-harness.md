@@ -30,8 +30,9 @@ Every applicable scenario checks concrete outcomes rather than relying on shorth
 - Phase 3 adds the append-only execution ledger and worker SIGSTOP/SIGKILL controls.
 - Phase 4 adds Runtime disconnect/reconnect, duplicate/replay, cancellation, and shutdown stress.
 - Phase 5 adds authenticated `ClusterHarness` plus directional network partitions and churn.
-- Phase 6 adds Kafka testcontainers and outbox outage/recovery.
-- Phase 7 adds resource chaos, soak, upgrade, and final-artifact release gates.
-- Phase 8 executes documentation examples from shipped artifacts.
+- Phase 6 adds PostgreSQL/S3 conformance suites and shared-backend, credential/connection-loss chaos.
+- Phase 7 adds Kafka testcontainers and outbox outage/recovery.
+- Phase 8 adds resource chaos, soak, upgrade, and final-artifact release gates.
+- Phase 9 executes documentation examples from shipped artifacts.
 
 No readiness or convergence test uses an unconditional sleep; all waits poll observable state with a deadline and attach logs plus the chaos timeline on failure.

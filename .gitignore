@@ -124,6 +124,19 @@ celerybeat.pid
 # Taskwire build artifacts
 agent/bin/
 python/taskwire/bin/
+.smoke-venv/
+dist/
+
+# make agent-run's default socket/state/object dirs, resolved relative to
+# taskwire.example.yaml (repo root) per the Phase 1 config contract
+/run/
+/var/
+
+# Go's fuzzing engine writes newly discovered inputs here on local
+# `go test -fuzz` runs. Distinct from the committed, hand-generated seed
+# corpus under python/tests/fuzz_corpus/ and testdata/protocol/v1/, which
+# ordinary tests require and must stay tracked.
+agent/pkg/protocol/testdata/fuzz/
 
 # Environments
 .env

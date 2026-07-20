@@ -2,7 +2,7 @@
 
 ## Goal
 
-Provide the public `@task`, `Runtime`, and `TaskFuture` APIs over one local agent connection, including bounded submission acknowledgement, owner/cursor result replay, cancellation, shutdown, and transparent object references.
+Provide the Python `@task`, `Runtime`, and `TaskFuture` APIs over one local agent connection, including bounded submission acknowledgement, owner/cursor result replay, cancellation, shutdown, and transparent object references. This is one language binding for the Phase 1 contract; decorator and Future conventions are not agent-level task semantics.
 
 This is the single-node pre-alpha MVP gate.
 
@@ -15,15 +15,15 @@ The build frontend remains the root `Makefile` plus Poetry/`python -m build`. Ke
 ## Public API
 
 ```python
-@task(name="reports.generate", version="v3", labels={"workload": "cpu"}, idempotent=True)
-def generate_report(input_ref): ...
+@task(name="reports.generate", version="v3", invocation="value", labels={"workload": "cpu"}, idempotent=True)
+def generate_report(request): ...
 
 with Runtime() as runtime:
     future = runtime.submit(generate_report, input_ref)
     value = future.result(timeout=30)
 ```
 
-`name` and `version` are required in production mode. The decorator returns an immutable `TaskDefinition` retaining the callable for local registration. Convenience inference from module/qualname is allowed only if it produces a stable explicit value in exported metadata; lambdas and local functions require inline development mode.
+`name` and `version` are required in production mode. `invocation="value"` is the portable default and accepts exactly one portable input value. `invocation="python_args"` explicitly enables ordinary Python positional/keyword calling semantics and is not executable by Node.js or Go workers. The decorator returns an immutable `TaskDefinition` retaining the callable for local registration. Convenience inference from module/qualname is allowed only if it produces a stable explicit value in exported metadata; lambdas and local functions require inline development mode.
 
 ## Files
 
@@ -59,7 +59,7 @@ On connect/reconnect, send `RESUME_RESULTS(owner_id, after_cursor, batch_size)`,
 ### Submission ordering
 
 1. Allocate task ID and install its Future in `_submitting` before writing.
-2. Serialize arguments. Inline values above the threshold are uploaded through the agent and replaced with `ObjectRef`.
+2. Serialize the single portable input for `value`, or the canonical `{args, kwargs}` adapter payload for `python_args`. Inline values above the threshold are uploaded through the agent and replaced with `ObjectRef`.
 3. Send `SUBMIT` with owner, registered identity, labels, and value reference.
 4. Wait at most `ipc.submit_ack_timeout_ms` for typed ACK/ERROR.
 5. Move to `_pending` only on ACK. Timeout, rejection, disconnect, or partial write terminalizes and removes the Future; no pending entry leaks.
@@ -84,13 +84,14 @@ Protocol validation and role errors become `ProtocolError`; `task_conflict` beco
 
 ## Security and Compatibility
 
-The Unix socket and configured object store are trusted-code boundaries when cloudpickle is enabled. Production registered tasks avoid serializing executable functions but arguments/results may still execute constructors during deserialization. No Runtime TCP listener is created, no routable address is advertised, and no Rust result server exists.
+The Unix socket and configured object store are trusted-code boundaries when cloudpickle is enabled. `cloudpickle`, inline functions, and `python_args` are explicitly Python runtime features and are never advertised as portable. Production portable tasks use the Phase 1 msgpack value profile or bytes. No Runtime TCP listener is created, no routable address is advertised, and no Rust result server exists.
 
 Pure Python is mandatory. Native acceleration may optimize framing/heartbeat only behind parity tests.
 
 ## Required Tests
 
 - Decorator validation, registry collision, stable name/version, and inline-mode rejection.
+- Portable `value` submissions match the shared conformance bytes; `python_args` and cloudpickle registrations are marked Python-only and cannot be leased to synthetic Node.js/Go capabilities.
 - Future first-terminal-wins, timeout, cancellation race, callback isolation, and thread safety.
 - Disconnect before ACK leaves no Future leak and reports unknown acceptance clearly.
 - ACKed submit survives Runtime disconnect; reconnect with owner/cursor resolves it.

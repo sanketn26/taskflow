@@ -50,7 +50,7 @@ A crash during any step is recovered from persisted transfer state. Timeouts ret
 
 ## Object Placement
 
-- Shared S3 references may be relayed only when both nodes advertise the same validated store identity and policy.
+- Shared S3 references may be relayed only when both nodes advertise the same validated store identity and policy. (The S3 adapter itself is Phase 6 scope; this section only fixes the placement/policy contract clustering depends on once that adapter exists.)
 - Filesystem or node-local references are copied/proxied agent-to-agent as immutable streams before the receiving task becomes claimable.
 - Transfers verify size and SHA-256, use idempotent object keys, and clean partial files.
 - Workers always access objects through their local agent and never receive remote filesystem paths or Runtime addresses.

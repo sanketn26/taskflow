@@ -24,6 +24,7 @@ def _pyproject_version() -> str:
     with (REPO_ROOT / "pyproject.toml").open("rb") as f:
         return tomllib.load(f)["tool"]["poetry"]["version"]
 
+
 _SMOKE_SCRIPT = """
 import subprocess
 import taskwire
@@ -46,9 +47,7 @@ def _run_isolated(python_exe: Path, cwd: Path) -> None:
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, (
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "OK" in result.stdout
 
 

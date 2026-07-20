@@ -17,7 +17,7 @@ This review is retained as a non-normative record. Its actionable corrections ha
 
 ## Scope Decision
 
-Phases 0–4 form the single-node pre-alpha MVP. Phase 5 clustering and Phase 6 Kafka are independent post-MVP gates. Phase 7 releases only the features whose own exit gates pass. Phase 8 documents only shipped behavior.
+Phases 0–4 form the single-node pre-alpha MVP. Phase 5 clustering, Phase 6 distributed storage backends, and Phase 7 Kafka are independent post-MVP gates. Phase 8 releases only the features whose own exit gates pass. Phase 9 documents only shipped behavior.
 
 Deferred items include exactly-once execution, cancellation of running/remotely owned work, automatic binary downloads, untested PostgreSQL/S3 adapters, and claims that a pure-Python heartbeat survives arbitrary GIL-holding native code.
 

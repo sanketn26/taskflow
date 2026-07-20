@@ -1,8 +1,8 @@
-# Phase 1 — Protocol and Configuration
+# Phase 1 — Language-Neutral Protocol and Configuration
 
 ## Goal
 
-Freeze the cross-language wire, envelope, reference, and configuration contracts used by Python and Go. This phase contains no task execution, daemons, networking, or persistent storage implementations.
+Freeze the language-neutral wire, envelope, reference, worker-capability, and configuration contracts used by the Python SDK, all worker runtimes, and the Go agent. This phase contains no task execution, daemons, networking, or persistent storage implementations. Python is the first implemented worker runtime, but the v1 contract must admit Node.js and Go workers without adding fields or changing task persistence.
 
 Workers never receive application callback addresses, and Kafka is not a result-transport mode. The schemas in this file are the complete protocol and configuration contract for implementation.
 
@@ -17,6 +17,8 @@ The current Go config loader and `taskwire-agent` server are lifecycle stubs. Th
 - Python and Go frame codecs with byte-for-byte parity.
 - Strict msgpack envelope validation in both languages.
 - Shared definitions for task identity, `ObjectRef`, owner IDs, cursors, failures, and result records.
+- Worker-runtime and task-capability registration independent of scheduling labels.
+- A portable task-value profile shared by Python, Node.js, and Go.
 - Python and Go configuration loaders validated against one example YAML file.
 - Fuzz seeds for frame and envelope decoding.
 
@@ -35,7 +37,7 @@ Every connection uses this 31-byte header followed by `payload_len` bytes:
 
 Flags are `0x01` error, `0x02` idempotent, and `0x04` forwarded. Unknown flag bits are rejected in v1. A requester chooses a nonzero request ID unique among its in-flight requests on that connection. `ACK`, `ERROR`, `TASK`, object-transfer responses, and query/status responses copy it. Unsolicited `RESULT` notifications use request ID zero and are correlated by task ID plus cursor. Reuse while the earlier request is in flight is `duplicate_request`; reconnect starts a new request-ID namespace. Readers validate the version, type, flags, and configured maximum length before allocating a payload buffer. EOF before the first header byte is a clean disconnect; EOF after any frame byte is a truncated-frame error.
 
-The error flag is required exactly on `ERROR` frames. The idempotent flag is valid only on retryable-by-identity `SUBMIT`, `COMPLETE`, result `ACK`, and object PUT requests. The forwarded flag is valid only on authenticated cluster `SUBMIT` traffic. Invalid flag/type combinations are `unknown_flags`.
+The error flag is required exactly on `ERROR` frames. The idempotent flag is valid only on retryable-by-identity `SUBMIT`, `COMPLETE`, result `ACK`, and object PUT requests. The forwarded flag is valid only on authenticated cluster `SUBMIT` and `COMPLETE` traffic. Invalid flag/type combinations are `unknown_flags`.
 
 ## Message Types
 
@@ -58,8 +60,18 @@ The error flag is required exactly on `ERROR` frames. The idempotent flag is val
 | `0x0F` | `OBJECT_CHUNK` | either direction during object RPC | `{transfer_id, sequence, data, eof}` |
 | `0x10` | `HELLO` | Runtime/worker/admin → local agent | `Hello` request; `Ack(kind="hello")` response |
 | `0x11` | `TASK_QUERY` | Runtime → origin agent | `TaskQuery` request; `TaskSnapshot` response |
+| `0x12` | `REGISTER_TASKS` | worker → local agent | `TaskRegistration`; `Ack(kind="register_tasks")` response |
 
-Every local connection begins with `HELLO`; any other request before successful registration receives `not_registered` and closes the connection. A Runtime registers one owner ID and is eligible for that owner's `RESULT` notifications. A newer connection for the same owner becomes primary after resume begins; the old connection may finish in-flight responses but receives no new notifications. A worker registers its worker ID and may send only worker-direction messages. An admin connection may send only `STATUS`; the CLI and harness use this role. Local Unix-socket permissions are the v0.1 authentication boundary; owner ID remains a bearer capability for owner-scoped operations.
+Every local connection begins with `HELLO`; any other request before successful registration receives `not_registered` and closes the connection. A Runtime registers one owner ID and is eligible for that owner's `RESULT` notifications. A newer connection for the same owner becomes primary after resume begins; the old connection may finish in-flight responses but receives no new notifications. A worker registers its identity, runtime, and worker-wide codecs, then must successfully send `REGISTER_TASKS` before `PULL`. An admin connection may send only `STATUS`; the CLI and harness use this role. Local Unix-socket permissions are the v0.1 authentication boundary; owner ID remains a bearer capability for owner-scoped operations.
+
+Runtime identity and task capability are not routing labels. The scheduler first filters by exact `(task_name, task_version)`, invocation profile, and input codec, then applies labels/resources among compatible workers. An incompatible task is never leased merely so a worker can return `unknown_task`. A repeated registration generation with identical content is idempotent; an older or conflicting generation is `task_conflict`. Disconnect removes that worker's capabilities without changing queued or terminal task state.
+
+Registration generation starts at 1. A higher generation atomically replaces the
+connection's complete task set; partial/delta registration is not supported in
+v1. An empty task set is valid but can never receive a task. Duplicate task
+name/version entries, an empty codec list, codecs absent from the worker HELLO,
+and `python_args` or `cloudpickle` on a non-Python worker are `invalid_message`.
+The `worker_id` in HELLO, registration, and PULL must match exactly.
 
 `RESULT` is agent-to-Runtime only. ACK payloads are typed and never inferred from connection context. SUBMIT ACK is sent only after the configured input and task-state durability boundary. Responses copy the request ID; notification ACKs use a new nonzero request ID and identify the notification in their payload.
 
@@ -70,6 +82,29 @@ For GET, the agent first sends an `OBJECT_GET` response `{transfer_id, object: O
 ## Canonical Msgpack Schemas
 
 All maps use UTF-8 string keys. Decoders reject missing required keys, wrong types, duplicate logical keys, trailing bytes, and unknown keys unless a schema explicitly marks them as forward-compatible. IDs are fixed-size binary values: task/owner/lease IDs are 16 bytes; cursors are unsigned 64-bit integers.
+
+### Canonical encoding profile
+
+“Byte-for-byte parity” means the following encoding rules, rather than each
+msgpack library's defaults:
+
+- Map keys are emitted in ascending UTF-8 byte order at every nesting level.
+- Maps and arrays use the smallest legal msgpack header for their element count;
+  strings and binary values use the smallest legal header for their byte length.
+- Schema fields declared `uint64`, `uint32`, or `int64` use the corresponding
+  fixed-width msgpack representation even when the value would fit in a smaller
+  integer. Other integers contained inside user `ValueRef.inline` bytes are opaque
+  to this protocol and are not canonicalized here.
+- Booleans and nil use the native msgpack boolean and nil tokens. Floats are not
+  protocol fields. UTF-8 must be valid and strings are never normalized.
+- The encoder emits every required key, including keys whose value is nil, false,
+  zero, or an empty collection. It never emits an unknown or optional key.
+
+Decode accepts any valid msgpack integer representation when its value fits the
+declared signedness and width; re-encoding produces the canonical representation
+above. Golden fixtures therefore test canonical encoder bytes, while non-canonical
+but semantically valid input is covered by decoder tests. `ValueRef.inline` is
+already-serialized opaque data and must never be unpacked by the protocol codec.
 
 ### `ObjectRef`
 
@@ -101,12 +136,30 @@ The encoder selects an object reference when serialized bytes exceed `storage.ob
 ```text
 Hello = exactly one of:
   {role: "runtime", owner_id: binary(16)}
-  {role: "worker", worker_id: string}
+  {
+    role: "worker",
+    worker_id: string,
+    runtime: "python" | "nodejs" | "go",
+    runtime_version: string,
+    sdk_version: string,
+    codecs: array<string>
+  }
   {role: "admin"}
 
 PullRequest {
   worker_id: string,
-  labels: map<string,string>
+  capability_generation: uint64
+}
+
+TaskRegistration {
+  worker_id: string,
+  generation: uint64,                 # starts at 1 and increases on replacement
+  tasks: array<{
+    task_name: string,
+    task_version: string,
+    invocation: "value" | "python_args",
+    codecs: array<string>
+  }>
 }
 
 TaskQuery {
@@ -134,7 +187,8 @@ TaskEnvelope {
   owner_id: binary(16),
   task_name: string,
   task_version: string,
-  arguments: ValueRef,       # serialized canonical {args: array, kwargs: map<string,any>}
+  invocation: "value" | "python_args",
+  input: ValueRef,
   labels: map<string,string>,
   idempotent: bool,
   submitted_at_unix_ms: int64
@@ -197,7 +251,15 @@ StatusSnapshot {
 }
 ```
 
-`arguments` is one serialized value containing a two-key map; positional arguments are an array and keyword arguments are a string-keyed map. This shape is identical for every codec. `Completion` and `ForwardedCompletion` each require exactly one of `result` or `failure`. The agent accepts a local completion only for the active fencing lease and a forwarded completion only for the active transfer. Dead-letter exhaustion is delivered as `state: "failed"` with failure code `max_attempts_exceeded`; `dead_lettered` is an internal/query state. A result notification is replayed until its ACK or retention expiry. Registered `task_name` plus `task_version` is the production identity; inline serialized functions are permitted only when `tasks.allow_inline_functions` is true and use the reserved identity `__inline__`.
+`value` is the portable invocation profile: `input` contains one application value and the runtime adapter passes that value to the registered handler. `python_args` is a Python-only compatibility profile whose decoded input is exactly `{args: array, kwargs: map<string,any>}`. The agent treats input bytes as opaque but leases a task only to a worker advertising the matching invocation and codec. New cross-language APIs should use `value`; Python decorators may expose ordinary `*args/**kwargs` through `python_args`.
+
+`Completion` and `ForwardedCompletion` each require exactly one of `result` or `failure`. The agent accepts a local completion only for the active fencing lease and a forwarded completion only for the active transfer. Dead-letter exhaustion is delivered as `state: "failed"` with failure code `max_attempts_exceeded`; `dead_lettered` is an internal/query state. A result notification is replayed until its ACK or retention expiry. Registered `task_name` plus `task_version` is the production identity; runtime is not part of that identity. Inline serialized functions are permitted only when `tasks.allow_inline_functions` is true, use the reserved identity `__inline__`, the `python_args` invocation, and the `cloudpickle` codec.
+
+### Portable task-value profile
+
+Protocol msgpack and task-value msgpack are separate layers. Protocol decoding never unpacks `ValueRef.inline`. A portable `msgpack` task value is restricted recursively to nil, boolean, signed or unsigned 64-bit integer, float64, valid UTF-8 string, binary, array, and map with UTF-8 string keys. NaN, infinity, extension types, timestamps, non-string map keys, and integers outside 64-bit ranges are rejected. Portable maps sort keys by UTF-8 bytes and use minimum-size collection/string/binary headers. Portable integers use the smallest legal representation (nonnegative values use unsigned encodings) and floats are always float64, producing deterministic bytes without a schema-specific integer width.
+
+Python tuples, sets, classes, and arbitrary-size integers; JavaScript `undefined`, `number` values outside the safe integer range, `Date`, symbols, and class instances; and Go structs or maps without an explicit portable adapter are not implicit portable values. Node.js exposes full-width integers as `bigint`; conversion to `number` requires a checked safe range. `bytes` is portable but application-defined. `cloudpickle` is Python-only and must be rejected unless the worker advertises runtime `python`. No Node.js or Go equivalent of inline executable-function serialization is part of v1.
 
 ### ACK and error schemas
 
@@ -215,6 +277,7 @@ Ack = exactly one of:
   {kind: "object_get", transfer_id: binary(16)}
   {kind: "resume", owner_id: binary(16), next_cursor: uint64, more: bool}
   {kind: "steal", transfer_id: binary(16), accepted: uint32}
+  {kind: "register_tasks", worker_id: string, generation: uint64, accepted: uint32}
 
 Error {
   code: string,
@@ -276,20 +339,22 @@ storage:
 
 tasks:
   allow_inline_functions: false
-  import_modules: ["myapp.tasks"]
 
 workers:
-  count: 4
-  python_executable: "python3"
-  working_directory: "."
-  environment: {}
   shutdown_grace_ms: 30000
   restart_backoff_min_ms: 250
   restart_backoff_max_ms: 30000
   restart_limit: 5
   restart_window_seconds: 60
-  labels: {workload: "general"}
-  resources: {max_memory_mb: 2048, max_cpu_percent: 80}
+  pools:
+    - name: "python-default"
+      runtime: "python"
+      command: ["python3", "-m", "taskwire.worker.runner"]
+      count: 4
+      working_directory: "."
+      environment: {}
+      labels: {workload: "general"}
+      resources: {max_memory_mb: 2048, max_cpu_percent: 80}
 
 cluster:
   enabled: false
@@ -341,53 +406,199 @@ Validation requirements:
 - Cluster authentication/transfer limits are positive and ownership timeout exceeds transfer timeout.
 - Routing rules have `{task_labels: map<string,string>, require_node_labels: map<string,string>, preference: "local" | "remote" | "any"}`. Rules are evaluated in order using exact all-key matches; the first match wins. With no match, required task labels are matched directly against node labels and local eligible execution is preferred. Duplicate/conflicting rule keys and an empty rule are rejected.
 - Enabling Kafka requires brokers and a non-empty topic. Kafka never changes worker completion ordering or Runtime result replay.
-- Worker import modules are non-empty dotted names; `python_executable` must resolve at agent startup, `working_directory` must exist, environment keys cannot override Taskwire-owned socket/config/worker-ID variables, and restart minimum cannot exceed maximum.
+- Worker-pool names are non-empty and unique; runtime is exactly `python`, `nodejs`, or `go`; command is a non-empty argv array with no shell interpretation; count may be zero; working directory must exist at agent startup; environment keys cannot override Taskwire-owned socket/config/worker-ID/pool variables; and restart minimum cannot exceed maximum. The command executable is resolved at agent startup, not config-load time. Runtime-specific imports and bootstrap behavior are command arguments or application-owned environment; the agent does not interpret Python module, Node.js package, or Go symbol names.
 - `sqlite_synchronous` is exactly `FULL` or `NORMAL`; production defaults to `FULL`. Backend-specific fields supplied for a different backend are rejected rather than ignored.
 
 ## Platform Contract
 
 v0.1 supports Linux and macOS on architectures for which the release publishes an agent artifact. IPC uses Unix-domain sockets and lifecycle tests require POSIX signals. Windows is not supported in v0.1; Python imports and pure codec unit tests may run there, but agent discovery must report an unsupported-platform installation error rather than implying `.exe` support exists. Adding Windows requires a separately versioned named-pipe, service, and process-lifecycle contract plus its own artifact gate.
 
-## Files
+## Exact Implementation Changes
 
-```text
-python/taskwire/exceptions.py
-python/taskwire/protocol/messages.py
-python/taskwire/protocol/frames.py
-python/taskwire/config.py
-agent/pkg/protocol/protocol.go
-agent/internal/config/config.go
-taskwire.example.yaml
-python/tests/unit/test_protocol.py
-python/tests/unit/test_config.py
-agent/pkg/protocol/protocol_test.go
-agent/internal/config/config_test.go
-python/tests/integration/test_protocol_compat.py
-```
+### Shared fixtures are the executable contract
 
-The optional Rust codec is deferred until profiling justifies it. If implemented, it must be byte-identical to the Python reference and the package must continue to work without it.
+Add `testdata/protocol/v1/manifest.yaml` at the repository root. Each case has
+`name`, `message_type`, `task_id_hex`, `request_id`, `flags`, `payload_hex`, and
+`frame_hex`. Include at least one valid instance of every payload variant (all
+ACK variants included), minimum/maximum integer boundaries, nil result/failure
+branches, an unsolicited result, and UTF-8/empty-collection cases. Both languages
+read this same file; neither language generates committed expected bytes for the
+other. Add invalid cases under `testdata/protocol/v1/invalid/` as raw `.bin` files
+with a sibling YAML file declaring the expected stable error code.
 
-## Required Tests
+Add `testdata/config/normalized.yaml`, containing the normalized representation
+expected from `taskwire.example.yaml`. Paths in this expected file are represented
+relative to the fixture directory and resolved by each test before comparison.
+Do not compare debug strings or marshalled language structs.
 
-- Round-trip every message and schema in Python and Go.
-- Prove concurrent in-flight requests, out-of-order responses, unsolicited results, request-ID reuse rejection, and reconnect namespace reset.
-- Cross-language golden vectors in both directions, including `ObjectRef`, failures, and cursors.
-- Reject unknown version/type/flags, short headers, truncated payloads, oversize lengths, malformed msgpack, bad ID sizes, invalid union shapes, and unknown configuration fields.
-- Verify a claimed 4 GiB payload is rejected before allocation.
-- Verify Python and Go load `taskwire.example.yaml` to equivalent normalized values.
-- Verify cluster, storage, lease, and Kafka conditional validation.
-- Verify HELLO role enforcement, owner isolation, same-owner primary connection replacement, and TASK_QUERY non-disclosure.
-- Verify every stable error code has identical retryability and Python/Go constants.
-- Seed Python and Go fuzzers with all valid message forms and malformed boundary cases.
+### Python protocol package
+
+Create or replace these files:
+
+- `python/taskwire/protocol/frames.py`: define `HEADER_SIZE = 31`,
+  `PROTOCOL_VERSION = 1`, `MAX_UINT32`, `Flag(IntFlag)`, `MessageType(IntEnum)`,
+  and frozen `Frame(version, message_type, task_id, request_id, flags, payload)`.
+  Export `encode_frame(frame, *, max_payload_bytes) -> bytes`,
+  `decode_header(data, *, max_payload_bytes) -> FrameHeader`, and
+  `read_frame(read_exact, *, max_payload_bytes) -> Frame | None`. `read_exact(n)`
+  is an injected callable so unit tests require no socket. It returns `None` only
+  when EOF occurs before byte zero; partial header/payload EOF raises
+  `TruncatedFrame`.
+- `python/taskwire/protocol/messages.py`: frozen dataclasses/enums for every schema
+  above plus `encode_payload(message_type, value) -> bytes` and
+  `decode_payload(message_type, payload) -> schema value`. Validation occurs on
+  decode and before encode. Use `uuid.UUID` at the Python API boundary and raw
+  16-byte values on the wire. Do not accept general mappings where a declared
+  schema object is required by the encoder.
+- `python/taskwire/protocol/errors.py`: the stable error-code constants, one
+  immutable `ERROR_RETRYABLE: Mapping[str, bool]`, and protocol exceptions
+  `ProtocolDecodeError(code, message)` with subclasses for frame truncation and
+  size rejection. Exception messages contain offsets/field names but never
+  payload values.
+- `python/taskwire/protocol/session.py`: a pure state machine, with no sockets,
+  implementing pre-HELLO rejection, role/message authorization, in-flight
+  request-ID registration/completion, owner matching, result-ACK correlation, and
+  connection-local namespace reset. Primary-owner connection selection itself
+  belongs to Phase 2; here expose deterministic transition outputs which Phase 2
+  can use to perform replacement.
+- `python/taskwire/protocol/__init__.py`: re-export only the supported enums,
+  frame API, schema types, codec functions, and errors. Importing `taskwire` must
+  remain independent of the optional acceleration module.
+
+`msgpack.unpackb` must use `raw=False`, `strict_map_key=True`, and an object-pairs
+hook so duplicate keys are detected before conversion to a dict. Set an explicit
+maximum for every length-bearing value before copying it. Never call `unpackb` on
+a buffer larger than the already-validated frame payload limit.
+
+### Go protocol package
+
+Replace `agent/pkg/protocol/doc.go` with implementation split into
+`frame.go`, `messages.go`, `codec.go`, `errors.go`, and `session.go`:
+
+- `FrameHeader`, `Frame`, `MessageType`, and `Flags` mirror the Python API.
+  `ReadFrame(r io.Reader, maxPayload uint32) (*Frame, error)` uses
+  `io.ReadFull`, distinguishes clean initial EOF from truncation, validates the
+  header before `make([]byte, payloadLen)`, and returns typed errors carrying a
+  stable code. `WriteFrame(w io.Writer, frame Frame, maxPayload uint32) error`
+  must handle short writes.
+- Schema structs use fixed `[16]byte` and `[32]byte` IDs/checksums and explicit
+  integer widths. Union types have constructors and `Validate()` methods; callers
+  cannot obtain valid encoded bytes for a union with zero or multiple branches.
+- Implement the canonical msgpack encoder/strict decoder in this package. Do not
+  marshal structs directly: library struct tags do not guarantee sorted keys,
+  duplicate-key detection, fixed integer widths, or rejection of unknown fields.
+- Export the same stable error constants and retryability lookup as Python. The
+  session validator remains a pure state machine and has no dependency on the
+  stub server or future scheduler packages.
+
+Adding a pure-Go msgpack dependency is allowed; `go.mod` must list it as a direct
+dependency. The optional Rust codec remains deferred until profiling justifies it.
+If later implemented, it must preserve these APIs and bytes, and Python must work
+without it.
+
+### Configuration loaders
+
+`taskwire.example.yaml` is currently a pre-contract example (nested `sqlite`,
+PostgreSQL/S3 placeholders, `result_delivery`, and missing Phase 1 fields). Replace
+its contents with the exact Configuration Contract shown in this document. The
+checked-in example is the single cross-language fixture; do not maintain a second
+“test-only valid config.” Use repository-safe relative paths in the checked-in
+file so `make agent-run` does not require `/var` access.
+
+In `python/taskwire/config.py`, define frozen nested dataclasses and
+`load_config(path: str | Path) -> Config`. In `agent/internal/config/config.go`,
+replace the four-field stub with corresponding nested structs and keep
+`Load(path string) (*Config, error)`. Both loaders must:
+
+- apply defaults only for fields present in the example contract with documented
+  defaults; required fields are never silently synthesized;
+- reject duplicate YAML keys and unknown keys at every depth;
+- reject YAML aliases, custom tags, non-string map keys, and multiple documents;
+- resolve `socket`, SQLite `dsn`, filesystem-store `root`, and worker
+  `working_directory` relative to the config file's resolved parent directory;
+- perform structural decoding first and conditional validation second;
+- return errors containing the dotted field path and a stable category
+  (`invalid_config` or `unsupported_backend`) without environment substitution,
+  filesystem creation, executable lookup, or network access.
+
+Development-store warnings are returned as `Config.warnings` / `Config.Warnings`,
+not logged by the library. Startup checks for each pool command executable and
+working directory are deliberately left to the agent command, because loader
+tests must be hermetic.
+
+Update `agent/cmd/taskwire-agent/main.go` to read `cfg.Socket`, the SQLite DSN, and
+the selected filesystem store root. Update `harness/agent_harness.py::_write_config`
+to emit the complete contract with one SQLite state store, one filesystem object
+store, clustering/Kafka disabled, an empty `workers.pools` array, and all paths
+under `base_dir`. No Phase 0 key (`socket_path`, `log_path`, `state_dir`,
+`object_dir`) or superseded single-runtime worker key (`workers.count`,
+`workers.python_executable`) may remain accepted.
+
+### Framed STATUS readiness adapter
+
+Change `AgentHarness.status()` to return a decoded `StatusSnapshot`. It opens a
+connection, sends `HELLO(role="admin")`, requires `Ack(kind="hello")`, sends an
+empty `STATUS` with a new nonzero request ID, and validates that the response
+copies that ID. `_socket_responds()` returns true only when `snapshot.ready` is
+true. Update lifecycle assertions accordingly.
+
+Phase 1 may adapt `agent/internal/stubserver` just far enough to decode frames,
+run the session validator, and answer HELLO/STATUS. It must not add task execution,
+storage, scheduling, or general networking. Delete the newline `STATUS` path once
+the harness is migrated; compatibility tests must fail if text status is accepted.
+
+## Test Layout and Required Assertions
+
+| Test file | Required assertions |
+|---|---|
+| `python/tests/unit/test_protocol_frames.py` | exact 31-byte header, all flag/type rules, clean EOF versus every truncation offset, length checked before payload read/allocation, short-reader behavior |
+| `python/tests/unit/test_protocol_messages.py` | every schema/union round trip, worker capabilities, portable-value boundaries, canonical map order and integer widths, duplicate/unknown/missing keys, type/range/UTF-8/ID-size failures, trailing msgpack bytes |
+| `python/tests/unit/test_protocol_session.py` | HELLO-first, worker registration before PULL, capability generation fencing, role matrix, duplicate in-flight request, completion frees ID, reconnect reset, owner mismatch, notification ACK correlation |
+| `python/tests/unit/test_config.py` | complete example, defaults, relative paths, duplicate/unknown/nested keys, YAML restrictions, every conditional validation branch |
+| `agent/pkg/protocol/*_test.go` | the same frame, schema, session, and error assertions against Go APIs |
+| `agent/internal/config/config_test.go` | the same configuration table cases as Python and normalized fixture comparison |
+| `python/tests/integration/test_protocol_compat.py` | Python and Go consume the shared golden vectors; framed HELLO/STATUS works and newline STATUS fails |
+| existing Phase 0 tests | lifecycle, version parity, wheel install, discovery, and acceleration fallback remain green after assertion updates |
+
+Specific regression cases are mandatory:
+
+- A header claiming payload length `0xffffffff` with a 16 MiB configured limit
+  returns `frame_too_large` after exactly 31 bytes have been read and without a
+  payload allocation/read attempt.
+- Every stable error code and retryability bit matches in Python, Go, and a shared
+  table in the golden manifest.
+- `TaskQuery` wrong-owner and nonexistent IDs produce indistinguishable unknown
+  snapshots when passed through the pure owner-filter helper. Actual task lookup
+  and owner-primary connection replacement remain Phase 2 integration work.
+- Concurrent request behavior is tested by interleaving pure session-state
+  transitions; Phase 1 does not claim a production concurrent socket server.
+- Python and Go normalized config values match the shared expected fixture,
+  including resolved paths and warnings.
+- Python, Node.js, and Go capability examples for the same portable task produce
+  the same registration bytes; `cloudpickle` with a non-Python runtime and an
+  incompatible invocation/codec combination are rejected before PULL.
+
+Add Python fuzz tests using deterministic byte corpora under
+`python/tests/fuzz_corpus/{frames,envelopes}/`; ordinary unit tests iterate the
+corpus so CI exercises it without a fuzz plugin. Add Go `FuzzReadFrame` and
+`FuzzDecodePayload` targets and seed them from `testdata/protocol/v1`. Fuzz
+properties are: never panic, never allocate beyond the configured bound, accepted
+frames re-encode canonically, and errors use a registered code.
 
 ## Implementation Order
 
-1. Define golden schema fixtures and error codes in the existing Python and Go protocol packages.
-2. Implement the pure-Python frame codec and envelope validators without changing the `_accel` fallback contract.
-3. Port them to Go and run parity tests immediately.
-4. Replace both stub config surfaces with loaders for `taskwire.example.yaml`, then update `AgentHarness._write_config()` and its readiness/status probe atomically.
-5. Add fuzz targets and commit the seed corpus.
-6. Run `make unit`, `make integration`, and `make smoke-wheel` to prove the Phase 0 artifact path still works.
+1. Commit the shared manifest, invalid corpus, normalized config fixture, and
+   table-driven tests first; they should fail because APIs are absent.
+2. Implement Python errors, schemas, canonical msgpack, and frames, followed by
+   the pure session state machine.
+3. Implement the equivalent Go package and make both golden suites pass before
+   touching the server.
+4. Replace the example YAML and both config loaders, then migrate the command and
+   harness config atomically.
+5. Add framed HELLO/STATUS to the stub server and migrate readiness/lifecycle
+   assertions; remove text STATUS.
+6. Add fuzz targets/corpora, then run `make format`, `make lint`, `make unit`,
+   `make integration`, and `make smoke-wheel`.
 
 ## Exit Gate
 

@@ -5,7 +5,7 @@ REPO_ROOT := $(shell git rev-parse --show-toplevel 2>/dev/null || pwd)
 VERSION   := $(shell grep -m1 '^version' $(REPO_ROOT)/pyproject.toml | cut -d'"' -f2)
 PYTHON    ?= python3
 
-all: build-agent build-sdk
+all: help
 
 help:
 	@echo "Targets:"

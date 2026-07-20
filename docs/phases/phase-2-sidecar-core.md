@@ -2,13 +2,13 @@
 
 ## Goal
 
-Implement the single-node agent around the behavioral `TaskStateStore` and `ObjectStore` contracts. SQLite and the local filesystem are the production defaults; memory implementations exist for tests and explicitly ephemeral development.
+Implement the language-neutral single-node agent around the behavioral `TaskStateStore` and `ObjectStore` contracts. SQLite and the local filesystem are the production defaults; memory implementations exist for tests and explicitly ephemeral development. Python is the first worker implementation, but storage, claiming, and process supervision must not encode Python calling conventions.
 
 ## Phase 0 Baseline
 
-Extend the existing `agent/cmd/taskwire-agent` command and `AgentHarness`; do not introduce a second daemon entry point or test-only process wrapper. Replace `agent/internal/stubserver` with the framed IPC server while preserving `taskwire-agent version`, `taskwire-agent --config PATH` during the pre-release phases, deterministic binary lookup, SIGTERM cleanup, and the harness-owned directory layout (`agent.sock`, `agent.log`, `state/`, and `objects/`). The service-style `run --config` command can be added compatibly in Phase 7.
+Extend the existing `agent/cmd/taskwire-agent` command and `AgentHarness`; do not introduce a second daemon entry point or test-only process wrapper. Replace `agent/internal/stubserver` with the framed IPC server while preserving `taskwire-agent version`, `taskwire-agent --config PATH` during the pre-release phases, deterministic binary lookup, SIGTERM cleanup, and the harness-owned directory layout (`agent.sock`, `agent.log`, `state/`, and `objects/`). The service-style `run --config` command can be added compatibly in Phase 8.
 
-`AgentHarness.status()` is currently a text readiness probe and `worker_pids()` is a Phase 3 placeholder. This phase changes `status()` to the Phase 1 framed protocol and keeps lifecycle diagnostics and the seeded `ChaosTimeline` intact. Add fault scenarios to the existing `integration`, `chaos`, and `resource` pytest markers rather than creating parallel harness conventions. Every change must continue to pass the Phase 0 version, discovery, lifecycle, and clean-wheel tests.
+Phase 1 migrates `AgentHarness.status()` from its text readiness probe to framed HELLO/STATUS; `worker_pids()` remains a Phase 3 placeholder. This phase replaces the readiness adapter with the production IPC server while keeping the framed harness API, lifecycle diagnostics, and seeded `ChaosTimeline` intact. Add fault scenarios to the existing `integration`, `chaos`, and `resource` pytest markers rather than creating parallel harness conventions. Every change must continue to pass the Phase 0 version, discovery, lifecycle, and clean-wheel tests.
 
 ## Testable Outcome
 
@@ -21,7 +21,7 @@ Implement these Go interfaces; backend-specific types must not leak into callers
 ```go
 type TaskStateStore interface {
     Create(ctx context.Context, task TaskRecord) error
-    Claim(ctx context.Context, workerID string, ttl time.Duration) (*TaskRecord, error)
+    Claim(ctx context.Context, worker WorkerCapabilities, ttl time.Duration) (*TaskRecord, error)
     Renew(ctx context.Context, taskID TaskID, leaseID LeaseID, ttl time.Duration) error
     Complete(ctx context.Context, taskID TaskID, leaseID LeaseID, result ObjectRef) error
     Fail(ctx context.Context, taskID TaskID, leaseID LeaseID, failure Failure) error
@@ -43,9 +43,9 @@ type ObjectStore interface {
 }
 ```
 
-`Create` is content-idempotent by task ID. `Claim` is exclusive and creates the fencing lease. `Complete`/`Fail` atomically write terminal state and a monotonically increasing per-owner result cursor. `Cancel` succeeds only for a queued record owned by the caller and also writes a terminal result. `ListResults` is ordered by cursor and owner-isolated. Acknowledgement is idempotent and cannot acknowledge another owner or mismatched cursor. `PurgeResults` removes only acknowledged or retention-expired terminal records and returns object references that may have become unreferenced. Object references are immutable; all reads validate size and SHA-256.
+`Create` is content-idempotent by task ID. `Claim` is exclusive, creates the fencing lease, and considers only tasks compatible with the registered worker's exact name/version, invocation profile, and codec before applying label routing. `Complete`/`Fail` atomically write terminal state and a monotonically increasing per-owner result cursor. `Cancel` succeeds only for a queued record owned by the caller and also writes a terminal result. `ListResults` is ordered by cursor and owner-isolated. Acknowledgement is idempotent and cannot acknowledge another owner or mismatched cursor. `PurgeResults` removes only acknowledged or retention-expired terminal records and returns object references that may have become unreferenced. Object references are immutable; all reads validate size and SHA-256.
 
-The v0.1 backend registry contains `memory` and `sqlite` for state, and `memory` and `filesystem` for objects. PostgreSQL/S3 remain separately gated future adapters; configuring an unregistered backend fails startup with `unsupported_backend`.
+The v0.1 backend registry contains `memory` and `sqlite` for state, and `memory` and `filesystem` for objects. PostgreSQL/S3 remain separately gated future adapters implemented against these same interfaces in Phase 6; configuring an unregistered backend fails startup with `unsupported_backend`.
 
 SQLite owns ordering and eligibility; there is no separate in-memory queue whose state can diverge. `Claim` atomically selects an eligible task, increments its attempt, and creates a unique `lease_id`. `Renew`, `Complete`, and `Fail` compare that lease. Late completions return `stale_lease` without changing state.
 
@@ -74,6 +74,7 @@ agent/cmd/taskwire-agent/main.go
 - Bind the Unix socket, set `0660`, and apply the configured group before accepting.
 - Each connection has one serialized writer; request handlers never interleave frame bytes.
 - Require Phase 1 `HELLO`, enforce its role/owner permissions for every request, and route direct responses by request ID.
+- Require workers to publish a valid `REGISTER_TASKS` generation before PULL; remove their capability record on disconnect and fence stale generations.
 - Permit only one primary result-notification connection per owner; replacement is atomic and never drops persisted results.
 - Decode and schema errors receive `ERROR` when possible and close only the offending connection.
 - Track an authenticated/declared `owner_id` per Runtime connection. Disconnect removes connection registrations, never task/result state.
@@ -82,7 +83,8 @@ agent/cmd/taskwire-agent/main.go
 ### Request semantics
 
 - `SUBMIT`: validate identity and envelope; store referenced/large input first; idempotently `Create` by task ID; ACK only after the selected backend durability boundary. Same ID plus same content returns the same ACK; same ID plus different content is `task_conflict`.
-- `PULL`: atomically `Claim`; return an empty ACK when no eligible task exists; otherwise return `TASK` with lease ID, TTL, and attempt.
+- `REGISTER_TASKS`: validate the registration against HELLO runtime/codecs, atomically replace the connection's capability generation, and return the typed accepted-count ACK. Capability state is connection-scoped and is not persisted as task state.
+- `PULL`: atomically `Claim` using the connection's registered capabilities and configured pool labels; return an empty ACK when no compatible eligible task exists; otherwise return `TASK` with lease ID, TTL, and attempt.
 - `HEARTBEAT`: renew only the matching active lease. Unknown/stale leases return a typed error.
 - `COMPLETE`: validate the referenced result through `ObjectStore.Stat`, then atomically record terminal state/result record under the active lease. Only after commit may the agent send `RESULT` to a connected owner.
 - `RESUME_RESULTS`: call `ListResults(owner, after, limit)` and stream ordered notifications. Never expose another owner's records.
@@ -103,7 +105,7 @@ A separate bounded sweeper applies `storage.objects.result_retention_seconds`. A
 
 ### Worker manager
 
-Spawn configured Python workers with the agent socket and config path. Track PIDs, exit status, and restart count. Apply bounded exponential restart backoff and a restart-rate circuit breaker so poison tasks cannot cause a fork storm. `workers.count: 0` is valid.
+Spawn every configured worker pool using its argv directly, without a shell, and pass the agent socket, config path, worker ID, and pool name through reserved environment variables. The manager treats Python, Node.js, and Go commands uniformly; it does not import modules or inspect task code. Track PID, pool, runtime, exit status, and restart count. Apply bounded exponential restart backoff and a per-pool restart-rate circuit breaker so a failing runtime cannot cause a fork storm or suppress healthy pools. An empty pool list and a pool count of zero are valid.
 
 ### Shutdown order
 
@@ -124,6 +126,7 @@ Spawn configured Python workers with the agent socket and config path. Track PID
 - Malformed/truncated/oversized frames do not crash the agent or allocate claimed sizes.
 - Concurrent request IDs receive the matching response even when handlers finish out of order; a slow result consumer cannot stall workers or other owners.
 - HELLO role violations, duplicate request IDs, owner replacement, TASK_QUERY non-disclosure, and every owner-scoped operation are tested.
+- Registration-before-PULL, stale/conflicting capability generations, disconnect cleanup, and concurrent Python/Node.js/Go synthetic capability sets prove incompatible tasks are never claimed and label routing occurs only after compatibility filtering.
 - Graceful shutdown rejects new work and leaves no worker or socket leaks.
 - Kill/restart with SQLite loses no acknowledged task; the explicit memory backend test demonstrates and documents that restart may lose acknowledged state.
 - At scenario end the agent is alive unless deliberately killed, has no panic, has no orphan workers/socket, and reports conservation: submitted equals terminal plus queued/leased work.

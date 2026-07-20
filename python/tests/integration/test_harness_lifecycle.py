@@ -13,7 +13,7 @@ def test_start_stop_leaves_no_socket_or_orphans(built_agent_binary):
     harness = AgentHarness(agent_binary=built_agent_binary, chaos_seed=1)
     harness.start()
     try:
-        assert harness.status().startswith("OK")
+        assert harness.status().ready
         assert harness.socket_path.exists()
     finally:
         harness.stop()
@@ -26,7 +26,7 @@ def test_start_stop_leaves_no_socket_or_orphans(built_agent_binary):
 def test_context_manager_stops_and_cleans_base_dir(built_agent_binary):
     with AgentHarness(agent_binary=built_agent_binary, chaos_seed=2) as harness:
         base_dir = harness.base_dir
-        assert harness.status().startswith("OK")
+        assert harness.status().ready
 
     assert not base_dir.exists()
 
@@ -45,7 +45,7 @@ def test_kill_and_restart_preserves_storage(built_agent_binary):
 
     harness.start()
     try:
-        assert harness.status().startswith("OK")
+        assert harness.status().ready
         assert marker.read_text() == "keep me"
     finally:
         harness.close()

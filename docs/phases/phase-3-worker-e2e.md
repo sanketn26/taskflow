@@ -2,7 +2,7 @@
 
 ## Goal
 
-Implement registered Python workers that claim tasks from their local agent, execute them, store immutable results through that agent, and complete using a fencing lease. Workers never contact a submitting Runtime or external queue.
+Implement the first registered worker runtime in Python, plus the reusable worker-protocol conformance suite that later Node.js and Go workers must pass. Python workers claim tasks from their local agent, execute them, store immutable results through that agent, and complete using a fencing lease. Workers never contact a submitting Runtime or external queue.
 
 ## Phase 0 Baseline
 
@@ -28,7 +28,7 @@ harness/ledger.py
 
 ## Worker Connection
 
-The worker connects only to the configured local Unix socket, registers with `HELLO(role="worker")`, then performs `PULL`, receives `TASK`, starts a heartbeat tied to `lease_id`, and uses agent RPCs to read/write objects. One connection multiplexes control and object-transfer requests using the Phase 1 request and transfer IDs; one reader dispatches responses and a serialized writer prevents frame interleaving.
+The worker loads its task registry, connects only to the configured local Unix socket, sends the full Phase 1 worker `HELLO`, publishes generation 1 with `REGISTER_TASKS`, and begins `PULL` only after the registration ACK. It receives `TASK`, starts a heartbeat tied to `lease_id`, and uses agent RPCs to read/write objects. One connection multiplexes control and object-transfer requests using the Phase 1 request and transfer IDs; one reader dispatches responses and a serialized writer prevents frame interleaving. Reconnect creates a new capability namespace and republishes the complete registry before pulling.
 
 All socket operations have deadlines. EOF or agent restart ends the current worker process cleanly so the manager can restart it; it does not continue executing work whose lease can no longer be renewed.
 
@@ -36,14 +36,14 @@ All socket operations have deadlines. EOF or agent restart ends the current work
 
 Production tasks are resolved by exact `(task_name, task_version)`. Registration rejects duplicate identities unless the same callable is being idempotently registered. Unknown names/versions produce terminal `unknown_task` failures; they are deployment errors and are not retried.
 
-The agent starts `workers.python_executable -m taskwire.worker.runner` in `workers.working_directory`, passes only the configured environment plus Taskwire-owned socket/config/worker-ID variables, and loads every `tasks.import_modules` module before polling. Import failure is a worker-start failure visible in status; the restart circuit breaker applies. Inline functions use the reserved `__inline__` identity and are accepted only when `tasks.allow_inline_functions` is enabled; this mode is explicitly trusted-code development compatibility.
+The agent starts the configured Python worker-pool command in the pool working directory and passes only the configured environment plus Taskwire-owned socket/config/worker-ID/pool variables. The command owns Python module loading before registration; import failure is a worker-start failure visible in status and the pool restart circuit breaker applies. Inline functions use the reserved `__inline__` identity and are accepted only when `tasks.allow_inline_functions` is enabled; this mode is explicitly trusted-code development compatibility and advertises only `python_args` plus `cloudpickle`.
 
 ## Execution Contract
 
 1. Decode and validate `LeasedTask`.
 2. Resolve the registered callable.
-3. Fetch `arguments` when it is an `ObjectRef`; verify size and SHA-256.
-4. Deserialize the canonical `{args, kwargs}` value and validate that `args` is an array and `kwargs` is a string-keyed map.
+3. Fetch `input` when it is an `ObjectRef`; verify size and SHA-256.
+4. Validate the leased invocation/codec against the accepted registration. For `value`, decode the portable profile and call the handler with one value. For `python_args`, deserialize canonical `{args, kwargs}`, validate its shape, and call the Python adapter.
 5. Start heartbeat before invoking user code. Its interval is `lease_ttl_ms / 3` with bounded jitter.
 6. Execute the callable once for this attempt.
 7. Serialize the return value or structured failure. Serialization errors become `serialization_error`; they never crash-loop the worker.
@@ -68,6 +68,8 @@ Object RPCs stream bounded chunks and never embed values larger than the configu
 ## Required Tests
 
 - Registered success and task exception, inline and object-backed arguments/results.
+- Capability registration is deterministic; the worker never pulls before ACK and republishes after reconnect.
+- Portable-value conformance vectors cover every shared type and boundary; Python-specific values and `cloudpickle` never advertise portable compatibility.
 - Unknown task version is terminal and not requeued.
 - Result serialization failure resolves as a structured failure.
 - Worker killed mid-task is respawned and the lease is requeued.
@@ -81,7 +83,7 @@ Object RPCs stream bounded chunks and never embed values larger than the configu
 ## Implementation Order
 
 1. Registry and serialization helpers.
-2. Agent client including object streaming and typed errors.
+2. Agent client including HELLO/capability registration, object streaming, and typed errors.
 3. Worker loop without heartbeat against memory stores.
 4. Heartbeat and lease-loss handling.
 5. Worker-manager integration, including the existing harness `worker_pids()` hook, SQLite/filesystem E2E, and seeded chaos scenarios.
@@ -89,4 +91,4 @@ Object RPCs stream bounded chunks and never embed values larger than the configu
 
 ## Exit Gate
 
-Phase 3 is complete when a raw client receives agent-relayed results end to end, crash/retry/fencing tests pass, large values use verified `ObjectRef`s, registered identity is enforced, and the worker code contains no `callback_addr`, result listener, Kafka producer, or direct RESULT sender.
+Phase 3 is complete when a raw client receives agent-relayed results end to end, crash/retry/fencing tests pass, large values use verified `ObjectRef`s, registered identity and capability-aware leasing are enforced, the portable conformance vectors are reusable without Python imports, and the worker code contains no `callback_addr`, result listener, Kafka producer, or direct RESULT sender.

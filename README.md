@@ -13,7 +13,7 @@ Taskwire is a lightweight, opinionated, optionally distributed task processing f
 
 Taskwire is currently an architecture and implementation plan; the package and agent described below have not been implemented in this repository yet. Do not rely on the placeholder `pip install` workflow for production use.
 
-Start with the [architecture](docs/architecture.md), the [critical plan review](docs/implementation-plan-review.md), and the phase documents under `docs/phases/`. [Phase 8](docs/phases/phase-8-examples-use-cases.md) defines the quick start, runnable examples, and recommended use cases that will accompany the implementation.
+Start with the [architecture](docs/architecture.md), the [critical plan review](docs/implementation-plan-review.md), and the phase documents under `docs/phases/`. [Phase 9](docs/phases/phase-9-examples-use-cases.md) defines the quick start, runnable examples, and recommended use cases that will accompany the implementation.
 
 The corrected delivery order makes Phases 0–4 the single-node MVP. Clustering and Kafka delivery are separate post-MVP feature gates.
 

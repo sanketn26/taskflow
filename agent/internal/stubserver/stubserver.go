@@ -1,19 +1,21 @@
-// Package stubserver implements the Phase 0 stub agent's control socket.
-// It exists only to prove that AgentHarness can start a process, observe a
-// ready socket, exchange a status call, and shut the process down cleanly.
-// Later phases replace this with the real IPC protocol.
+// Package stubserver implements the Phase 1 stub agent's control socket:
+// it decodes frames, runs the pure session validator, and answers
+// HELLO/STATUS. It intentionally does not implement task execution,
+// storage, or scheduling — those are later phases. AgentHarness uses it
+// to prove process lifecycle, readiness, and the framed protocol.
 package stubserver
 
 import (
-	"bufio"
-	"fmt"
 	"net"
 	"os"
-	"strings"
 	"sync"
+
+	"github.com/sanketn26/taskwire/agent/pkg/protocol"
 )
 
-// Server accepts newline-delimited text commands on a Unix domain socket.
+const maxPayloadBytes = 16 * 1024 * 1024
+
+// Server accepts framed protocol connections on a Unix domain socket.
 type Server struct {
 	version  string
 	listener net.Listener
@@ -28,12 +30,12 @@ type Server struct {
 // first if a stale one is present, since a clean shutdown always removes it.
 func New(socketPath, version string) (*Server, error) {
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("remove stale socket %s: %w", socketPath, err)
+		return nil, err
 	}
 
 	l, err := net.Listen("unix", socketPath)
 	if err != nil {
-		return nil, fmt.Errorf("listen on %s: %w", socketPath, err)
+		return nil, err
 	}
 
 	return &Server{version: version, listener: l}, nil
@@ -63,19 +65,109 @@ func (s *Server) handle(conn net.Conn) {
 	defer s.wg.Done()
 	defer conn.Close()
 
-	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
-		cmd := strings.TrimSpace(scanner.Text())
-		switch cmd {
-		case "STATUS":
-			fmt.Fprintf(conn, "OK version=%s pid=%d\n", s.version, os.Getpid())
-		case "":
-			// ignore blank lines
-		default:
-			fmt.Fprintf(conn, "ERR unknown command %q\n", cmd)
+	state := protocol.NewConnectionState()
+	session := protocol.Session{}
+
+	for {
+		frame, err := protocol.ReadFrame(conn, maxPayloadBytes)
+		if err != nil {
+			// Transport-level failure (truncated frame, oversize length,
+			// unknown version/type/flags): nothing safe to reply with.
+			return
 		}
+		if frame == nil {
+			return // clean EOF
+		}
+
+		if authErr := session.Authorize(state, frame.MessageType); authErr != nil {
+			de := authErr.(*protocol.DecodeError)
+			s.sendError(conn, frame, de)
+			if de.Code == protocol.NotRegistered {
+				return
+			}
+			continue
+		}
+
+		if beginErr := session.BeginRequest(state, frame.RequestID); beginErr != nil {
+			s.sendError(conn, frame, beginErr.(*protocol.DecodeError))
+			continue
+		}
+
+		if !s.dispatch(conn, state, &session, frame) {
+			return
+		}
+		session.CompleteRequest(state, frame.RequestID)
 	}
-	_ = scanner.Err() // connection closed or read error; nothing to report to a peer that's gone
+}
+
+// dispatch handles one authorized frame. It returns false if the
+// connection should be closed after this frame.
+func (s *Server) dispatch(conn net.Conn, state *protocol.ConnectionState, session *protocol.Session, frame *protocol.Frame) bool {
+	value, err := protocol.DecodePayload(frame.MessageType, frame.Payload)
+	if err != nil {
+		s.sendError(conn, frame, err.(*protocol.DecodeError))
+		return true
+	}
+
+	switch frame.MessageType {
+	case protocol.MessageHello:
+		hello := value.(*protocol.Hello)
+		session.Register(state, hello.Role, hello.OwnerID, hello.WorkerID)
+		ack, _ := protocol.NewAck("hello", nil)
+		return s.sendAck(conn, frame, ack)
+
+	case protocol.MessageStatus:
+		snapshot := &protocol.StatusSnapshot{
+			Version:            s.version,
+			PID:                uint64(os.Getpid()),
+			Ready:              true,
+			TaskCounts:         map[string]uint64{},
+			ActiveLeases:       0,
+			WorkerPIDs:         []uint64{},
+			WorkerRestarts:     0,
+			StorageHealthy:     true,
+			ClusterMembers:     0,
+			KafkaOutboxPending: 0,
+			LastErrorCode:      nil,
+		}
+		payload := snapshot.Encode()
+		return s.sendFrame(conn, protocol.Frame{
+			Version: 1, MessageType: protocol.MessageStatus, TaskID: frame.TaskID,
+			RequestID: frame.RequestID, Payload: payload,
+		})
+
+	default:
+		s.sendError(conn, frame, protocol.NewDecodeError(
+			protocol.Internal, "not implemented by the phase 1 stub server",
+		))
+		return true
+	}
+}
+
+func (s *Server) sendAck(conn net.Conn, frame *protocol.Frame, ack *protocol.Ack) bool {
+	payload, err := ack.Encode()
+	if err != nil {
+		return false
+	}
+	return s.sendFrame(conn, protocol.Frame{
+		Version: 1, MessageType: protocol.MessageAck, TaskID: frame.TaskID,
+		RequestID: frame.RequestID, Payload: payload,
+	})
+}
+
+func (s *Server) sendError(conn net.Conn, frame *protocol.Frame, de *protocol.DecodeError) bool {
+	errPayload := &protocol.Error{
+		Code: de.Code, Message: de.Message,
+		Retryable: protocol.ErrorRetryable[de.Code], Details: map[string]string{},
+	}
+	return s.sendFrame(conn, protocol.Frame{
+		Version: 1, MessageType: protocol.MessageError, TaskID: frame.TaskID,
+		RequestID: frame.RequestID, Flags: protocol.FlagError, Payload: errPayload.Encode(),
+	})
+}
+
+func (s *Server) sendFrame(conn net.Conn, frame protocol.Frame) bool {
+	return protocol.WriteFrame(conn, frame, maxPayloadBytes) == nil
 }
 
 // Close stops accepting new connections, waits for in-flight handlers, and

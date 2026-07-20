@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/sanketn26/taskwire/agent/internal/config"
@@ -36,8 +37,15 @@ func main() {
 		log.Fatalf("taskwire-agent: %v", err)
 	}
 
-	for _, dir := range []string{cfg.StateDir, cfg.ObjectDir} {
-		if dir == "" {
+	dirs := []string{filepath.Dir(cfg.Socket)}
+	if cfg.Storage.State.Type == "sqlite" {
+		dirs = append(dirs, filepath.Dir(cfg.Storage.State.DSN))
+	}
+	if store, ok := cfg.Storage.Objects.Stores[cfg.Storage.Objects.Default]; ok && store.Type == "filesystem" {
+		dirs = append(dirs, store.Root)
+	}
+	for _, dir := range dirs {
+		if dir == "" || dir == "." {
 			continue
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -45,7 +53,7 @@ func main() {
 		}
 	}
 
-	srv, err := stubserver.New(cfg.SocketPath, version)
+	srv, err := stubserver.New(cfg.Socket, version)
 	if err != nil {
 		log.Fatalf("taskwire-agent: %v", err)
 	}
