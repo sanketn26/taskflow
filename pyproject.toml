@@ -34,6 +34,7 @@ python = ">=3.11"
 cloudpickle = "^3.0"
 pyyaml = "^6.0"
 msgpack = "^1.0"
+protobuf = ">=6.33.5,<7"
 confluent-kafka = {version = "^2.5", optional = true}
 
 [tool.poetry.extras]
@@ -55,6 +56,9 @@ markers = [
   "kafka: requires a Kafka broker for delivery-mode tests",
   "resource: exercises resource-pressure or soak scenarios",
 ]
+
+[tool.ruff]
+extend-exclude = ["python/taskwire/protocol/pb"]
 
 [tool.poetry.urls]
 homepage = "https://github.com/sanketn26/taskwire"

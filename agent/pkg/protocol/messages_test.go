@@ -2,369 +2,143 @@ package protocol
 
 import (
 	"bytes"
-	"encoding/hex"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	"github.com/sanketn26/taskwire/agent/pkg/protocol/pb"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
-type manifestCase struct {
-	Name        string   `yaml:"name"`
-	MessageType string   `yaml:"message_type"`
-	TaskIDHex   string   `yaml:"task_id_hex"`
-	RequestID   uint64   `yaml:"request_id"`
-	Flags       []string `yaml:"flags"`
-	PayloadHex  string   `yaml:"payload_hex"`
-	FrameHex    string   `yaml:"frame_hex"`
-}
-
-type manifest struct {
-	Cases []manifestCase `yaml:"cases"`
-}
-
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("could not determine test file path")
-	}
-	// agent/pkg/protocol/messages_test.go -> repo root is four levels up.
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
-}
-
-func loadManifest(t *testing.T) manifest {
-	t.Helper()
-	path := filepath.Join(repoRoot(t), "testdata", "protocol", "v1", "manifest.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read manifest: %v", err)
-	}
-	var m manifest
-	if err := yaml.Unmarshal(data, &m); err != nil {
-		t.Fatalf("parse manifest: %v", err)
-	}
-	return m
-}
-
-var messageTypeByName = map[string]MessageType{
-	"SUBMIT": MessageSubmit, "PULL": MessagePull, "TASK": MessageTask,
-	"HEARTBEAT": MessageHeartbeat, "RESULT": MessageResult, "CANCEL": MessageCancel,
-	"COMPLETE": MessageComplete, "STEAL": MessageSteal, "ACK": MessageAck,
-	"STATUS": MessageStatus, "RESUME_RESULTS": MessageResumeResults, "ERROR": MessageError,
-	"OBJECT_PUT": MessageObjectPut, "OBJECT_GET": MessageObjectGet, "OBJECT_CHUNK": MessageObjectChunk,
-	"HELLO": MessageHello, "TASK_QUERY": MessageTaskQuery,
-	"REGISTER_TASKS": MessageRegisterTasks,
-}
-
-func flagsFromNames(names []string) Flags {
-	var f Flags
-	for _, n := range names {
-		switch strings.ToLower(n) {
-		case "error":
-			f |= FlagError
-		case "idempotent":
-			f |= FlagIdempotent
-		case "forwarded":
-			f |= FlagForwarded
-		}
-	}
-	return f
-}
-
-func TestGoldenVectorFrameBytes(t *testing.T) {
-	m := loadManifest(t)
-	for _, c := range m.Cases {
-		c := c
-		t.Run(c.Name, func(t *testing.T) {
-			mt, ok := messageTypeByName[c.MessageType]
-			if !ok {
-				t.Fatalf("unknown message type %q", c.MessageType)
-			}
-			payload, err := hex.DecodeString(c.PayloadHex)
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantFrame, err := hex.DecodeString(c.FrameHex)
-			if err != nil {
-				t.Fatal(err)
-			}
-			taskIDBytes, err := hex.DecodeString(c.TaskIDHex)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var taskID [16]byte
-			copy(taskID[:], taskIDBytes)
-
-			frame := Frame{
-				Version: 1, MessageType: mt, TaskID: taskID, RequestID: c.RequestID,
-				Flags: flagsFromNames(c.Flags), Payload: payload,
-			}
-			got, err := EncodeFrame(frame, maxPayload)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(got, wantFrame) {
-				t.Fatalf("frame bytes mismatch\n got: %x\nwant: %x", got, wantFrame)
-			}
-		})
-	}
-}
-
-func TestGoldenVectorPayloadRoundTrips(t *testing.T) {
-	m := loadManifest(t)
-	for _, c := range m.Cases {
-		c := c
-		t.Run(c.Name, func(t *testing.T) {
-			mt, ok := messageTypeByName[c.MessageType]
-			if !ok {
-				t.Fatalf("unknown message type %q", c.MessageType)
-			}
-			payload, err := hex.DecodeString(c.PayloadHex)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			value, err := DecodePayload(mt, payload)
-			if err != nil {
-				t.Fatalf("decode: %v", err)
-			}
-			reEncoded, err := EncodePayload(mt, value)
-			if err != nil {
-				t.Fatalf("encode: %v", err)
-			}
-			if !bytes.Equal(reEncoded, payload) {
-				t.Fatalf("payload round trip mismatch\n got: %x\nwant: %x", reEncoded, payload)
-			}
-		})
-	}
-}
-
-type invalidMeta struct {
-	ExpectedErrorCode string `yaml:"expected_error_code"`
-	MaxPayloadBytes   uint32 `yaml:"max_payload_bytes"`
-}
-
-func TestInvalidCorpusFailsWithStableCode(t *testing.T) {
-	dir := filepath.Join(repoRoot(t), "testdata", "protocol", "v1", "invalid")
-	entries, err := os.ReadDir(dir)
+func TestProtobufPayloadRoundTrip(t *testing.T) {
+	original := &Hello{Role: "worker", WorkerId: "worker-1", Runtime: "go", RuntimeVersion: "1.26", SdkVersion: "0.1.0", Codecs: []string{"msgpack", "bytes"}}
+	payload, err := EncodePayload(MessageHello, original)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".bin") {
-			continue
-		}
-		name := strings.TrimSuffix(entry.Name(), ".bin")
-		t.Run(name, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-			if err != nil {
-				t.Fatal(err)
-			}
-			metaBytes, err := os.ReadFile(filepath.Join(dir, name+".yaml"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var meta invalidMeta
-			if err := yaml.Unmarshal(metaBytes, &meta); err != nil {
-				t.Fatal(err)
-			}
-
-			_, decodeErr := ReadFrame(bytes.NewReader(data), meta.MaxPayloadBytes)
-			var got *DecodeError
-			if decodeErr != nil {
-				de, ok := decodeErr.(*DecodeError)
-				if !ok {
-					t.Fatalf("non-DecodeError: %v", decodeErr)
-				}
-				got = de
-			} else {
-				// Header decoded fine; the failure must be in the payload.
-				frame, err := ReadFrame(bytes.NewReader(data), meta.MaxPayloadBytes)
-				if err != nil {
-					de, ok := err.(*DecodeError)
-					if !ok {
-						t.Fatalf("non-DecodeError: %v", err)
-					}
-					got = de
-				} else {
-					_, payloadErr := DecodePayload(frame.MessageType, frame.Payload)
-					de, ok := payloadErr.(*DecodeError)
-					if !ok {
-						t.Fatalf("expected error decoding payload for case %q, got none", name)
-					}
-					got = de
-				}
-			}
-			if got.Code != meta.ExpectedErrorCode {
-				t.Fatalf("got code %q, want %q", got.Code, meta.ExpectedErrorCode)
-			}
-		})
-	}
-}
-
-// -- canonical encoding profile ------------------------------------------
-
-func TestMapKeysSortedAscendingUTF8(t *testing.T) {
-	ref := &ObjectRef{Store: "s", Key: "k", Size: 1, SHA256: bytes.Repeat([]byte{0}, 32), Codec: "bytes"}
-	encoded := ref.Encode()
-	if encoded[0] != 0x85 {
-		t.Fatalf("expected fixmap(5) header, got %#x", encoded[0])
-	}
-	decoded, err := unpackStrict(encoded)
+	decoded, err := DecodePayload(MessageHello, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := asMap(decoded, "payload")
+	if !proto.Equal(decoded, original) {
+		t.Fatalf("round trip differs: %v", decoded)
+	}
+}
+
+func TestProtobufBodyMustMatchFrameType(t *testing.T) {
+	payload, err := EncodePayload(MessageHello, &Hello{Role: "admin"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := DecodeObjectRef(m)
+	_, err = DecodePayload(MessageStatus, payload)
+	if err == nil || err.(*DecodeError).Code != InvalidMessage {
+		t.Fatalf("expected invalid_message, got %v", err)
+	}
+}
+
+func TestProtobufUnknownFieldsAreForwardCompatible(t *testing.T) {
+	unknown := protowire.AppendVarint(protowire.AppendTag(nil, 100, protowire.VarintType), 42)
+	helloBytes, err := proto.Marshal(&Hello{Role: "admin"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Store != ref.Store || got.Key != ref.Key || got.Size != ref.Size || got.Codec != ref.Codec || !bytes.Equal(got.SHA256, ref.SHA256) {
-		t.Fatalf("round trip mismatch: %+v vs %+v", got, ref)
+	hello := &Hello{}
+	if err := proto.Unmarshal(append(helloBytes, unknown...), hello); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := EncodePayload(MessageHello, hello)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodePayload(MessageHello, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reencoded, err := EncodePayload(MessageHello, decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(reencoded, unknown) {
+		t.Fatal("unknown protobuf field was not preserved")
 	}
 }
 
-func TestFixedWidthUint64RegardlessOfValue(t *testing.T) {
-	ref := &ObjectRef{Store: "s", Key: "k", Size: 0, SHA256: bytes.Repeat([]byte{0}, 32), Codec: "bytes"}
-	encoded := ref.Encode()
-	if !bytes.Contains(encoded, append(packStr("size"), 0xcf)) {
-		t.Fatalf("expected fixed-width uint64 marker after size key: %x", encoded)
+func TestMalformedProtobufRejected(t *testing.T) {
+	_, err := DecodePayload(MessageHello, []byte{0x0a, 0xff})
+	if err == nil || err.(*DecodeError).Code != MalformedPayload {
+		t.Fatalf("expected malformed_payload, got %v", err)
 	}
 }
 
-func TestDuplicateKeyRejected(t *testing.T) {
-	payload := append([]byte{0x82}, packStr("lease_id")...)
-	payload = append(payload, packBin(make([]byte, 16))...)
-	payload = append(payload, packStr("lease_id")...)
-	payload = append(payload, packBin(make([]byte, 16))...)
-	_, err := DecodePayload(MessageHeartbeat, payload)
-	de, ok := err.(*DecodeError)
-	if !ok || de.Code != InvalidMessage {
-		t.Fatalf("got %v, want invalid_message", err)
+func TestRequiredSemanticValidation(t *testing.T) {
+	_, err := EncodePayload(MessageHello, &Hello{Role: "runtime", OwnerId: []byte("short")})
+	if err == nil || err.(*DecodeError).Code != InvalidMessage {
+		t.Fatalf("expected invalid_message, got %v", err)
+	}
+
+	value := &ValueRef{Location: &pb.ValueRef_Inline{Inline: []byte("value")}}
+	if err := validateMessage(value); err == nil {
+		t.Fatal("inline ValueRef without codec accepted")
 	}
 }
 
-func TestUnknownKeyRejected(t *testing.T) {
-	payload := append([]byte{0x82}, packStr("lease_id")...)
-	payload = append(payload, packBin(make([]byte, 16))...)
-	payload = append(payload, packStr("extra")...)
-	payload = append(payload, packNil()...)
-	_, err := DecodePayload(MessageHeartbeat, payload)
-	de, ok := err.(*DecodeError)
-	if !ok || de.Code != InvalidMessage {
-		t.Fatalf("got %v, want invalid_message", err)
+func TestControlPlaneUsesProtobufEnvelope(t *testing.T) {
+	payload, err := EncodePayload(MessageStatus, &StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := &pb.ControlMessage{}
+	if err := proto.Unmarshal(payload, envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.GetStatusRequest() == nil {
+		t.Fatal("missing status_request oneof branch")
 	}
 }
 
-func TestMissingRequiredKeyRejected(t *testing.T) {
-	payload := []byte{0x80}
-	_, err := DecodePayload(MessageHeartbeat, payload)
-	de, ok := err.(*DecodeError)
-	if !ok || de.Code != InvalidMessage {
-		t.Fatalf("got %v, want invalid_message", err)
+func TestNewAckPopulatesAndValidatesTypedFields(t *testing.T) {
+	taskID := bytes.Repeat([]byte{1}, 16)
+	ack, err := NewAck("submit", map[string]interface{}{"task_id": taskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ack.TaskId, taskID) {
+		t.Fatal("task_id was dropped")
+	}
+	if _, err := NewAck("submit", nil); err == nil {
+		t.Fatal("incomplete ACK accepted")
+	}
+	if _, err := NewAck("unknown", nil); err == nil {
+		t.Fatal("unknown ACK kind accepted")
 	}
 }
 
-func TestTrailingBytesRejected(t *testing.T) {
-	req := &HeartbeatRequest{LeaseID: make([]byte, 16)}
-	payload := append(req.Encode(), 0x00)
-	_, err := DecodePayload(MessageHeartbeat, payload)
-	de, ok := err.(*DecodeError)
-	if !ok || de.Code != InvalidMessage {
-		t.Fatalf("got %v, want invalid_message", err)
+func TestSemanticValidationRecursesIntoNestedMessages(t *testing.T) {
+	ownerID := bytes.Repeat([]byte{1}, 16)
+	bad := &TaskEnvelope{OwnerId: ownerID, TaskName: "task", TaskVersion: "1", Invocation: "value", Input: &ValueRef{Location: &pb.ValueRef_Object{Object: &ObjectRef{Store: "s", Key: "k", Codec: "bytes", Sha256: []byte("short")}}}}
+	if _, err := EncodePayload(MessageSubmit, bad); err == nil {
+		t.Fatal("invalid nested ObjectRef accepted")
+	}
+	completion := &Completion{LeaseId: nil, Outcome: &pb.Completion_Result{Result: &ObjectRef{Store: "s", Key: "k", Codec: "bytes", Sha256: bytes.Repeat([]byte{0}, 32)}}}
+	if _, err := EncodePayload(MessageComplete, completion); err == nil {
+		t.Fatal("missing lease_id accepted")
 	}
 }
 
-func TestBadIDSizeRejected(t *testing.T) {
-	payload := append([]byte{0x81}, packStr("lease_id")...)
-	payload = append(payload, packBin(make([]byte, 15))...)
-	_, err := DecodePayload(MessageHeartbeat, payload)
-	de, ok := err.(*DecodeError)
-	if !ok || de.Code != InvalidMessage {
-		t.Fatalf("got %v, want invalid_message", err)
+func TestHelloRoleFieldsAreExclusive(t *testing.T) {
+	hello := &Hello{Role: "runtime", OwnerId: bytes.Repeat([]byte{1}, 16), WorkerId: "unexpected"}
+	if _, err := EncodePayload(MessageHello, hello); err == nil {
+		t.Fatal("runtime HELLO with worker fields accepted")
+	}
+	worker := &Hello{Role: "worker", WorkerId: "w", Runtime: "go", RuntimeVersion: "1", SdkVersion: "1", Codecs: []string{"msgpack", "msgpack"}}
+	if _, err := EncodePayload(MessageHello, worker); err == nil {
+		t.Fatal("duplicate worker codecs accepted")
 	}
 }
 
-func TestValueRefRequiresExactlyOneBranch(t *testing.T) {
-	v := &ValueRef{}
-	if err := v.Validate(); err == nil {
-		t.Fatal("expected error for empty ValueRef")
-	}
-	both := &ValueRef{Inline: []byte("x"), Codec: "msgpack", Object: &ObjectRef{}}
-	if err := both.Validate(); err == nil {
-		t.Fatal("expected error for both branches set")
-	}
-}
-
-func TestCompletionRequiresExactlyOneOfResultOrFailure(t *testing.T) {
-	c := &Completion{LeaseID: make([]byte, 16)}
-	if _, err := c.Encode(); err == nil {
-		t.Fatal("expected error when neither result nor failure is set")
-	}
-	c2 := &Completion{
-		LeaseID: make([]byte, 16),
-		Result:  &ObjectRef{Store: "s", Key: "k", SHA256: make([]byte, 32), Codec: "bytes"},
-		Failure: &Failure{Code: "task_exception", Message: "x"},
-	}
-	if _, err := c2.Encode(); err == nil {
-		t.Fatal("expected error when both result and failure are set")
-	}
-}
-
-func TestAckRequiresExactFieldSetForKind(t *testing.T) {
-	if _, err := NewAck("submit", map[string]interface{}{}); err == nil {
-		t.Fatal("expected error for missing required field")
-	}
-	if _, err := NewAck("hello", map[string]interface{}{"task_id": make([]byte, 16)}); err == nil {
-		t.Fatal("expected error for extra field")
-	}
-}
-
-func TestEncodePayloadRejectsWrongTypeForMessage(t *testing.T) {
-	req := &PullRequest{WorkerID: "w", CapabilityGeneration: 1}
-	_, err := EncodePayload(MessageHeartbeat, req)
-	de, ok := err.(*DecodeError)
-	if !ok || de.Code != InvalidMessage {
-		t.Fatalf("got %v, want invalid_message", err)
-	}
-}
-
-func TestDeclaredCollectionCountsRejectedBeforeAllocation(t *testing.T) {
-	for name, payload := range map[string][]byte{
-		"array32": {0xdd, 0xff, 0xff, 0xff, 0xff},
-		"map32":   {0xdf, 0xff, 0xff, 0xff, 0xff},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := unpackStrict(payload); err == nil {
-				t.Fatal("expected impossible collection count to be rejected")
-			}
-		})
-	}
-}
-
-func TestWorkerCodecValidationMatchesPython(t *testing.T) {
-	for _, codecs := range [][]string{{""}, {"msgpack", "msgpack"}} {
-		hello := NewWorkerHello("w", "go", "1.26", "0.1.0", codecs)
-		if _, err := hello.Encode(); err == nil {
-			t.Fatalf("expected codecs %v to be rejected", codecs)
-		}
-		capability := TaskCapability{TaskName: "t", TaskVersion: "1", Invocation: "value", Codecs: codecs}
-		if _, err := capability.Encode(); err == nil {
-			t.Fatalf("expected task codecs %v to be rejected", codecs)
-		}
-	}
-}
-
-func TestEncodePayloadRejectsInvalidNestedObjectRef(t *testing.T) {
-	req := &ObjectGetRequest{TransferID: make([]byte, 16), Object: &ObjectRef{Store: "s", Key: "k", Codec: "bytes", SHA256: []byte{1}}}
-	if _, err := EncodePayload(MessageObjectGet, req); err == nil {
-		t.Fatal("expected invalid checksum length to be rejected")
+func TestEncodeTypeMismatchReturnsRegisteredError(t *testing.T) {
+	_, err := EncodePayload(MessageHeartbeat, &PullRequest{WorkerId: "w", CapabilityGeneration: 1})
+	decodeErr, ok := err.(*DecodeError)
+	if !ok || decodeErr.Code != InvalidMessage {
+		t.Fatalf("expected invalid_message DecodeError, got %T %v", err, err)
 	}
 }

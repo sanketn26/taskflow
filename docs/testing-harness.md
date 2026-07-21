@@ -25,7 +25,9 @@ Every applicable scenario checks concrete outcomes rather than relying on shorth
 ## Harness Growth by Phase
 
 - Phase 0 creates `AgentHarness`, isolated resources, deadline polling, logs, markers, and seeded timelines.
-- Phase 1 adds protocol/config golden vectors and fuzz seeds.
+- Phase 1 adds generated Protobuf schema conformance, live cross-language
+  compatibility checks, the shared configuration fixture, and compact in-code
+  malformed-input/fuzz seeds.
 - Phase 2 adds raw IPC, storage recovery, failpoints, and agent kill/restart.
 - Phase 3 adds the append-only execution ledger and worker SIGSTOP/SIGKILL controls.
 - Phase 4 adds Runtime disconnect/reconnect, duplicate/replay, cancellation, and shutdown stress.

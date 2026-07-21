@@ -2,16 +2,14 @@ package protocol
 
 import (
 	"bytes"
-	"encoding/hex"
-	"os"
-	"path/filepath"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	"github.com/sanketn26/taskwire/agent/pkg/protocol/pb"
+	"google.golang.org/protobuf/proto"
 )
 
-// FuzzReadFrame is seeded from testdata/protocol/v1 (golden frames and the
-// invalid corpus). Properties: never panic, never allocate beyond the
+// FuzzReadFrame uses representative valid and malformed frame seeds.
+// Properties: never panic, never allocate beyond the
 // configured bound (proven by frame_test.go's explicit assertion; here we
 // only check accepted frames stay well-formed), and every failure carries
 // a registered stable error code.
@@ -49,7 +47,7 @@ func FuzzDecodePayload(f *testing.F) {
 	seedEnvelopeCorpus(f)
 
 	f.Fuzz(func(t *testing.T, data []byte, mtByte byte) {
-		mt := MessageType(mtByte%17 + 1) // valid range is 0x01..0x11
+		mt := MessageType(mtByte%18 + 1) // valid range is 0x01..0x12
 		value, err := DecodePayload(mt, data)
 		if err != nil {
 			de, ok := err.(*DecodeError)
@@ -73,65 +71,23 @@ func FuzzDecodePayload(f *testing.F) {
 	})
 }
 
-func fuzzRepoRoot(f *testing.F) string {
-	f.Helper()
-	wd, err := os.Getwd()
-	if err != nil {
-		f.Fatal(err)
-	}
-	// agent/pkg/protocol -> repo root is three levels up.
-	return filepath.Join(wd, "..", "..", "..")
-}
-
 func seedFrameCorpus(f *testing.F) {
 	f.Helper()
-	m := loadManifestForFuzz(f)
-	for _, c := range m.Cases {
-		data, err := hex.DecodeString(c.FrameHex)
-		if err != nil {
-			f.Fatal(err)
-		}
-		f.Add(data)
-	}
-	dir := filepath.Join(fuzzRepoRoot(f), "testdata", "protocol", "v1", "invalid")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		f.Fatal(err)
-	}
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) != ".bin" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			f.Fatal(err)
-		}
-		f.Add(data)
-	}
+	payload, _ := EncodePayload(MessageStatus, &StatusRequest{})
+	frame, _ := EncodeFrame(Frame{Version: 1, MessageType: MessageStatus, RequestID: 1, Payload: payload}, maxPayload)
+	f.Add(frame)
+	f.Add([]byte{})
+	f.Add([]byte{1, 2, 3})
 }
 
 func seedEnvelopeCorpus(f *testing.F) {
 	f.Helper()
-	m := loadManifestForFuzz(f)
-	for i, c := range m.Cases {
-		data, err := hex.DecodeString(c.PayloadHex)
-		if err != nil {
-			f.Fatal(err)
-		}
-		f.Add(data, byte(i%17))
-	}
-}
-
-func loadManifestForFuzz(f *testing.F) manifest {
-	f.Helper()
-	path := filepath.Join(fuzzRepoRoot(f), "testdata", "protocol", "v1", "manifest.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		f.Fatal(err)
-	}
-	var m manifest
-	if err := yaml.Unmarshal(data, &m); err != nil {
-		f.Fatal(err)
-	}
-	return m
+	payload, _ := EncodePayload(MessageHello, &Hello{Role: "admin"})
+	f.Add(payload, byte(MessageHello-1))
+	registration, _ := EncodePayload(MessageRegisterTasks, &TaskRegistration{WorkerId: "w", Generation: 1, Tasks: []*TaskCapability{}})
+	f.Add(registration, byte(MessageRegisterTasks-1))
+	invalidSubmit, _ := proto.Marshal(&pb.ControlMessage{Body: &pb.ControlMessage_Submit{Submit: &pb.TaskEnvelope{}}})
+	f.Add(invalidSubmit, byte(MessageSubmit-1))
+	f.Add([]byte{}, byte(0))
+	f.Add([]byte{0xff}, byte(0))
 }

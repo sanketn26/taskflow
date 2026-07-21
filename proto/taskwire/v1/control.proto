@@ -1,0 +1,229 @@
+syntax = "proto3";
+
+package taskwire.v1;
+
+option go_package = "github.com/sanketn26/taskwire/agent/pkg/protocol/pb;pb";
+
+// ControlMessage is the sole protobuf payload carried by Taskwire's thin
+// length-bounded frame. Task inputs and results remain opaque bytes identified
+// by ValueRef.codec; "msgpack" there is an application-value codec, not the
+// control-plane encoding.
+message ControlMessage {
+  oneof body {
+    TaskEnvelope submit = 1;
+    ForwardedTask forwarded_submit = 2;
+    PullRequest pull = 3;
+    LeasedTask task = 4;
+    HeartbeatRequest heartbeat = 5;
+    ResultNotification result = 6;
+    CancelRequest cancel = 7;
+    Completion complete = 8;
+    ForwardedCompletion forwarded_complete = 9;
+    StealRequest steal = 10;
+    Ack ack = 11;
+    StatusRequest status_request = 12;
+    StatusSnapshot status_snapshot = 13;
+    ResumeResultsRequest resume_results = 14;
+    Error error = 15;
+    ObjectPutRequest object_put = 16;
+    ObjectGetRequest object_get = 17;
+    ObjectChunk object_chunk = 18;
+    Hello hello = 19;
+    TaskQuery task_query = 20;
+    TaskSnapshot task_snapshot = 21;
+    TaskRegistration register_tasks = 22;
+  }
+}
+
+message ObjectRef {
+  string store = 1;
+  string key = 2;
+  uint64 size = 3;
+  bytes sha256 = 4;
+  string codec = 5;
+}
+
+message ValueRef {
+  oneof location {
+    bytes inline = 1;
+    ObjectRef object = 2;
+  }
+  string codec = 3;
+}
+
+message Hello {
+  string role = 1;
+  bytes owner_id = 2;
+  string worker_id = 3;
+  string runtime = 4;
+  string runtime_version = 5;
+  string sdk_version = 6;
+  repeated string codecs = 7;
+}
+
+message PullRequest {
+  string worker_id = 1;
+  uint64 capability_generation = 2;
+}
+
+message TaskCapability {
+  string task_name = 1;
+  string task_version = 2;
+  string invocation = 3;
+  repeated string codecs = 4;
+}
+
+message TaskRegistration {
+  string worker_id = 1;
+  uint64 generation = 2;
+  repeated TaskCapability tasks = 3;
+}
+
+message TaskQuery {
+  bytes owner_id = 1;
+  repeated bytes task_ids = 2;
+}
+
+message TaskSnapshotEntry {
+  bytes task_id = 1;
+  string state = 2;
+  optional uint64 cursor = 3;
+  oneof outcome {
+    ObjectRef result = 4;
+    Failure failure = 5;
+  }
+}
+
+message TaskSnapshot { repeated TaskSnapshotEntry tasks = 1; }
+
+message TaskEnvelope {
+  bytes owner_id = 1;
+  string task_name = 2;
+  string task_version = 3;
+  string invocation = 4;
+  ValueRef input = 5;
+  map<string, string> labels = 6;
+  bool idempotent = 7;
+  int64 submitted_at_unix_ms = 8;
+}
+
+message LeasedTask {
+  TaskEnvelope task = 1;
+  bytes lease_id = 2;
+  uint32 ttl_ms = 3;
+  uint32 attempt = 4;
+}
+
+message Completion {
+  bytes lease_id = 1;
+  oneof outcome {
+    ObjectRef result = 2;
+    Failure failure = 3;
+  }
+}
+
+message ForwardedTask {
+  bytes transfer_id = 1;
+  string origin_node = 2;
+  TaskEnvelope task = 3;
+}
+
+message ForwardedCompletion {
+  bytes transfer_id = 1;
+  string remote_node = 2;
+  uint32 remote_attempt = 3;
+  oneof outcome {
+    ObjectRef result = 4;
+    Failure failure = 5;
+  }
+}
+
+message Failure {
+  string code = 1;
+  string message = 2;
+  ValueRef details = 3;
+  bool retryable = 4;
+}
+
+message ResultNotification {
+  bytes owner_id = 1;
+  uint64 cursor = 2;
+  string state = 3;
+  oneof outcome {
+    ObjectRef result = 4;
+    Failure failure = 5;
+  }
+}
+
+message StatusSnapshot {
+  string version = 1;
+  uint64 pid = 2;
+  bool ready = 3;
+  map<string, uint64> task_counts = 4;
+  uint64 active_leases = 5;
+  repeated uint64 worker_pids = 6;
+  uint64 worker_restarts = 7;
+  bool storage_healthy = 8;
+  uint64 cluster_members = 9;
+  uint64 kafka_outbox_pending = 10;
+  optional string last_error_code = 11;
+}
+
+message Ack {
+  string kind = 1;
+  bytes task_id = 2;
+  bytes transfer_id = 3;
+  bytes lease_id = 4;
+  bytes owner_id = 5;
+  optional uint64 cursor = 6;
+  optional bool cancelled = 7;
+  ObjectRef object = 8;
+  optional uint64 next_cursor = 9;
+  optional bool more = 10;
+  optional uint32 accepted = 11;
+  string worker_id = 12;
+  optional uint64 generation = 13;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  map<string, string> details = 4;
+}
+
+message HeartbeatRequest { bytes lease_id = 1; }
+message CancelRequest { bytes owner_id = 1; }
+
+message ResumeResultsRequest {
+  bytes owner_id = 1;
+  uint64 after_cursor = 2;
+  uint32 limit = 3;
+}
+
+message ObjectPutRequest {
+  bytes transfer_id = 1;
+  string codec = 2;
+  uint64 size = 3;
+  bytes sha256 = 4;
+}
+
+message ObjectGetRequest {
+  bytes transfer_id = 1;
+  ObjectRef object = 2;
+}
+
+message ObjectChunk {
+  bytes transfer_id = 1;
+  uint32 sequence = 2;
+  bytes data = 3;
+  bool eof = 4;
+}
+
+message StealRequest {
+  string requester_node = 1;
+  map<string, string> labels = 2;
+  uint32 limit = 3;
+}
+
+message StatusRequest {}

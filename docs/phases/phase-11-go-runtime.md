@@ -62,7 +62,7 @@ sdk/go/taskwire/*_test.go
 
 ## Required Tests
 
-- Consume every Phase 1 golden frame and portable-value vector.
+- Reuse the generated Phase 1 Protobuf bindings and consume every portable-value vector.
 - Register alongside synthetic Python and Node.js workers; capability and label
   filtering choose only compatible implementations.
 - Execute success, returned error, panic, object-backed input/result, heartbeat,

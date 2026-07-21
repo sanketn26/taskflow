@@ -14,8 +14,8 @@ The current Go config loader and `taskwire-agent` server are lifecycle stubs. Th
 
 ## Deliverables
 
-- Python and Go frame codecs with byte-for-byte parity.
-- Strict msgpack envelope validation in both languages.
+- A thin Python and Go frame transport with semantic interoperability.
+- One generated Protobuf control-plane schema shared by every runtime.
 - Shared definitions for task identity, `ObjectRef`, owner IDs, cursors, failures, and result records.
 - Worker-runtime and task-capability registration independent of scheduling labels.
 - A portable task-value profile shared by Python, Node.js, and Go.
@@ -24,7 +24,10 @@ The current Go config loader and `taskwire-agent` server are lifecycle stubs. Th
 
 ## Wire Frame
 
-Every connection uses this 31-byte header followed by `payload_len` bytes:
+Every connection uses this 31-byte header followed by `payload_len` bytes. The
+payload is a serialized `taskwire.v1.ControlMessage` Protobuf. The frame remains
+Taskwire-specific because it carries connection-local request correlation and
+task identity; it does not define a second control-plane schema or codec.
 
 | Offset | Size | Field | Encoding |
 |---:|---:|---|---|
@@ -79,32 +82,19 @@ Object transfers are correlated by a random 16-byte `transfer_id`. Chunks are co
 
 For GET, the agent first sends an `OBJECT_GET` response `{transfer_id, object: ObjectRef}` with the request ID, then zero or more `OBJECT_CHUNK` frames with that request ID, then `Ack(kind="object_get")`. For PUT, every chunk copies the initiating request ID and the final object-put ACK terminates it. `RESUME_RESULTS` emits up to `limit` request-ID-zero `RESULT` notifications followed by its correlated resume ACK; when `more` is true the Runtime repeats from `next_cursor`. `PULL` returns either `TASK` with the claimed task ID in the frame header or `Ack(kind="empty_pull")`.
 
-## Canonical Msgpack Schemas
+## Protobuf Control Schema
 
-All maps use UTF-8 string keys. Decoders reject missing required keys, wrong types, duplicate logical keys, trailing bytes, and unknown keys unless a schema explicitly marks them as forward-compatible. IDs are fixed-size binary values: task/owner/lease IDs are 16 bytes; cursors are unsigned 64-bit integers.
+`proto/taskwire/v1/control.proto` is the authoritative control-plane contract.
+Every runtime uses generated types rather than reimplementing map schemas or
+parsers. Each frame payload contains exactly one `ControlMessage.body` branch,
+and that branch must agree with the frame message type. IDs are Protobuf `bytes`
+fields with semantic validation requiring 16 bytes; checksums require 32 bytes.
 
-### Canonical encoding profile
-
-“Byte-for-byte parity” means the following encoding rules, rather than each
-msgpack library's defaults:
-
-- Map keys are emitted in ascending UTF-8 byte order at every nesting level.
-- Maps and arrays use the smallest legal msgpack header for their element count;
-  strings and binary values use the smallest legal header for their byte length.
-- Schema fields declared `uint64`, `uint32`, or `int64` use the corresponding
-  fixed-width msgpack representation even when the value would fit in a smaller
-  integer. Other integers contained inside user `ValueRef.inline` bytes are opaque
-  to this protocol and are not canonicalized here.
-- Booleans and nil use the native msgpack boolean and nil tokens. Floats are not
-  protocol fields. UTF-8 must be valid and strings are never normalized.
-- The encoder emits every required key, including keys whose value is nil, false,
-  zero, or an empty collection. It never emits an unknown or optional key.
-
-Decode accepts any valid msgpack integer representation when its value fits the
-declared signedness and width; re-encoding produces the canonical representation
-above. Golden fixtures therefore test canonical encoder bytes, while non-canonical
-but semantically valid input is covered by decoder tests. `ValueRef.inline` is
-already-serialized opaque data and must never be unpacked by the protocol codec.
+Unknown Protobuf fields are accepted and preserved under Protobuf's binary
+compatibility model. Tests compare decoded meaning and behavior, not serialized
+byte identity: Protobuf is deliberately not a canonical cross-language byte
+representation. Malformed wire data, a missing body, a body/frame mismatch,
+invalid oneof state, and failed Taskwire semantic constraints remain errors.
 
 ### `ObjectRef`
 
@@ -257,7 +247,7 @@ StatusSnapshot {
 
 ### Portable task-value profile
 
-Protocol msgpack and task-value msgpack are separate layers. Protocol decoding never unpacks `ValueRef.inline`. A portable `msgpack` task value is restricted recursively to nil, boolean, signed or unsigned 64-bit integer, float64, valid UTF-8 string, binary, array, and map with UTF-8 string keys. NaN, infinity, extension types, timestamps, non-string map keys, and integers outside 64-bit ranges are rejected. Portable maps sort keys by UTF-8 bytes and use minimum-size collection/string/binary headers. Portable integers use the smallest legal representation (nonnegative values use unsigned encodings) and floats are always float64, producing deterministic bytes without a schema-specific integer width.
+Protobuf control messages and task-value MsgPack are separate layers. Control decoding never unpacks `ValueRef.inline`. A portable `msgpack` task value is restricted recursively to nil, boolean, signed or unsigned 64-bit integer, float64, valid UTF-8 string, binary, array, and map with UTF-8 string keys. NaN, infinity, extension types, timestamps, non-string map keys, and integers outside 64-bit ranges are rejected. Portable maps sort keys by UTF-8 bytes and use minimum-size collection/string/binary headers. Portable integers use the smallest legal representation (nonnegative values use unsigned encodings) and floats are always float64, producing deterministic bytes without a schema-specific integer width.
 
 Python tuples, sets, classes, and arbitrary-size integers; JavaScript `undefined`, `number` values outside the safe integer range, `Date`, symbols, and class instances; and Go structs or maps without an explicit portable adapter are not implicit portable values. Node.js exposes full-width integers as `bigint`; conversion to `number` requires a checked safe range. `bytes` is portable but application-defined. `cloudpickle` is Python-only and must be rejected unless the worker advertises runtime `python`. No Node.js or Go equivalent of inline executable-function serialization is part of v1.
 
@@ -415,16 +405,13 @@ v0.1 supports Linux and macOS on architectures for which the release publishes a
 
 ## Exact Implementation Changes
 
-### Shared fixtures are the executable contract
+### Shared schema is the executable contract
 
-Add `testdata/protocol/v1/manifest.yaml` at the repository root. Each case has
-`name`, `message_type`, `task_id_hex`, `request_id`, `flags`, `payload_hex`, and
-`frame_hex`. Include at least one valid instance of every payload variant (all
-ACK variants included), minimum/maximum integer boundaries, nil result/failure
-branches, an unsolicited result, and UTF-8/empty-collection cases. Both languages
-read this same file; neither language generates committed expected bytes for the
-other. Add invalid cases under `testdata/protocol/v1/invalid/` as raw `.bin` files
-with a sibling YAML file declaring the expected stable error code.
+Maintain `proto/taskwire/v1/control.proto` as the single language-neutral
+control schema. Generated bindings are committed so consumers do not require a
+Protobuf compiler at installation time. Cross-language tests exchange messages
+between the Python harness and Go agent and compare semantic values. Exact
+Protobuf byte identity is deliberately not a compatibility requirement.
 
 Add `testdata/config/normalized.yaml`, containing the normalized representation
 expected from `taskwire.example.yaml`. Paths in this expected file are represented
@@ -444,12 +431,10 @@ Create or replace these files:
   is an injected callable so unit tests require no socket. It returns `None` only
   when EOF occurs before byte zero; partial header/payload EOF raises
   `TruncatedFrame`.
-- `python/taskwire/protocol/messages.py`: frozen dataclasses/enums for every schema
-  above plus `encode_payload(message_type, value) -> bytes` and
-  `decode_payload(message_type, payload) -> schema value`. Validation occurs on
-  decode and before encode. Use `uuid.UUID` at the Python API boundary and raw
-  16-byte values on the wire. Do not accept general mappings where a declared
-  schema object is required by the encoder.
+- `python/taskwire/protocol/pb/control_pb2.py`: generated schema bindings.
+- `python/taskwire/protocol/messages.py`: re-export generated schema types,
+  validate Taskwire semantic constraints, and wrap/unwrap `ControlMessage`.
+  It also owns the separate portable task-value MsgPack adapter.
 - `python/taskwire/protocol/errors.py`: the stable error-code constants, one
   immutable `ERROR_RETRYABLE: Mapping[str, bool]`, and protocol exceptions
   `ProtocolDecodeError(code, message)` with subclasses for frame truncation and
@@ -465,15 +450,14 @@ Create or replace these files:
   frame API, schema types, codec functions, and errors. Importing `taskwire` must
   remain independent of the optional acceleration module.
 
-`msgpack.unpackb` must use `raw=False`, `strict_map_key=True`, and an object-pairs
-hook so duplicate keys are detected before conversion to a dict. Set an explicit
-maximum for every length-bearing value before copying it. Never call `unpackb` on
-a buffer larger than the already-validated frame payload limit.
+The control decoder never invokes MsgPack. Portable task-value MsgPack uses the
+established language library with string map keys, duplicate-key rejection,
+finite float64 values, and caller-enforced frame/object size bounds.
 
 ### Go protocol package
 
-Replace `agent/pkg/protocol/doc.go` with implementation split into
-`frame.go`, `messages.go`, `codec.go`, `errors.go`, and `session.go`:
+The Go implementation is split into generated `pb/control.pb.go`, `frame.go`,
+`messages.go`, `portable_msgpack.go`, `errors.go`, and `session.go`:
 
 - `FrameHeader`, `Frame`, `MessageType`, and `Flags` mirror the Python API.
   `ReadFrame(r io.Reader, maxPayload uint32) (*Frame, error)` uses
@@ -481,20 +465,17 @@ Replace `agent/pkg/protocol/doc.go` with implementation split into
   header before `make([]byte, payloadLen)`, and returns typed errors carrying a
   stable code. `WriteFrame(w io.Writer, frame Frame, maxPayload uint32) error`
   must handle short writes.
-- Schema structs use fixed `[16]byte` and `[32]byte` IDs/checksums and explicit
-  integer widths. Union types have constructors and `Validate()` methods; callers
-  cannot obtain valid encoded bytes for a union with zero or multiple branches.
-- Implement the canonical msgpack encoder/strict decoder in this package. Do not
-  marshal structs directly: library struct tags do not guarantee sorted keys,
-  duplicate-key detection, fixed integer widths, or rejection of unknown fields.
+- Generate schema structs from the shared `.proto`. Protobuf `oneof` fields
+  represent unions; Taskwire validation applies fixed ID/checksum lengths and
+  domain invariants before encode and after decode.
+- `messages.go` contains only Protobuf dispatch and semantic validation.
+  `portable_msgpack.go` is exclusively the task-value codec.
 - Export the same stable error constants and retryability lookup as Python. The
   session validator remains a pure state machine and has no dependency on the
   stub server or future scheduler packages.
 
-Adding a pure-Go msgpack dependency is allowed; `go.mod` must list it as a direct
-dependency. The optional Rust codec remains deferred until profiling justifies it.
-If later implemented, it must preserve these APIs and bytes, and Python must work
-without it.
+The Protobuf and pure-Go MsgPack runtimes are direct dependencies. Optional Rust
+value-codec acceleration remains deferred until profiling justifies it.
 
 ### Configuration loaders
 
@@ -552,12 +533,12 @@ the harness is migrated; compatibility tests must fail if text status is accepte
 | Test file | Required assertions |
 |---|---|
 | `python/tests/unit/test_protocol_frames.py` | exact 31-byte header, all flag/type rules, clean EOF versus every truncation offset, length checked before payload read/allocation, short-reader behavior |
-| `python/tests/unit/test_protocol_messages.py` | every schema/union round trip, worker capabilities, portable-value boundaries, canonical map order and integer widths, duplicate/unknown/missing keys, type/range/UTF-8/ID-size failures, trailing msgpack bytes |
+| `python/tests/unit/test_protocol_messages.py` | generated-schema/oneof round trips, body/frame agreement, unknown-field compatibility, semantic ID validation, and separate portable-value boundaries |
 | `python/tests/unit/test_protocol_session.py` | HELLO-first, worker registration before PULL, capability generation fencing, role matrix, duplicate in-flight request, completion frees ID, reconnect reset, owner mismatch, notification ACK correlation |
 | `python/tests/unit/test_config.py` | complete example, defaults, relative paths, duplicate/unknown/nested keys, YAML restrictions, every conditional validation branch |
 | `agent/pkg/protocol/*_test.go` | the same frame, schema, session, and error assertions against Go APIs |
 | `agent/internal/config/config_test.go` | the same configuration table cases as Python and normalized fixture comparison |
-| `python/tests/integration/test_protocol_compat.py` | Python and Go consume the shared golden vectors; framed HELLO/STATUS works and newline STATUS fails |
+| `python/tests/integration/test_protocol_compat.py` | Python-generated HELLO/STATUS requests interoperate with Go-generated responses; newline STATUS fails |
 | existing Phase 0 tests | lifecycle, version parity, wheel install, discovery, and acceleration fallback remain green after assertion updates |
 
 Specific regression cases are mandatory:
@@ -565,8 +546,7 @@ Specific regression cases are mandatory:
 - A header claiming payload length `0xffffffff` with a 16 MiB configured limit
   returns `frame_too_large` after exactly 31 bytes have been read and without a
   payload allocation/read attempt.
-- Every stable error code and retryability bit matches in Python, Go, and a shared
-  table in the golden manifest.
+- Every stable error code and retryability bit matches in Python and Go tests.
 - `TaskQuery` wrong-owner and nonexistent IDs produce indistinguishable unknown
   snapshots when passed through the pure owner-filter helper. Actual task lookup
   and owner-primary connection replacement remain Phase 2 integration work.
@@ -574,25 +554,23 @@ Specific regression cases are mandatory:
   transitions; Phase 1 does not claim a production concurrent socket server.
 - Python and Go normalized config values match the shared expected fixture,
   including resolved paths and warnings.
-- Python, Node.js, and Go capability examples for the same portable task produce
-  the same registration bytes; `cloudpickle` with a non-Python runtime and an
+- Python, Node.js, and Go capability examples for the same portable task decode
+  to the same registration semantics; `cloudpickle` with a non-Python runtime and an
   incompatible invocation/codec combination are rejected before PULL.
 
-Add Python fuzz tests using deterministic byte corpora under
-`python/tests/fuzz_corpus/{frames,envelopes}/`; ordinary unit tests iterate the
-corpus so CI exercises it without a fuzz plugin. Add Go `FuzzReadFrame` and
-`FuzzDecodePayload` targets and seed them from `testdata/protocol/v1`. Fuzz
-properties are: never panic, never allocate beyond the configured bound, accepted
-frames re-encode canonically, and errors use a registered code.
+Python ordinary tests iterate compact in-code frame and malformed Protobuf seeds
+so CI exercises fuzz-style cases without a plugin. Go exposes `FuzzReadFrame` and
+`FuzzDecodePayload` with representative valid and malformed seeds. Properties
+are: never panic, never allocate beyond the configured bound, accepted messages
+round-trip semantically, and errors use a registered code.
 
 ## Implementation Order
 
-1. Commit the shared manifest, invalid corpus, normalized config fixture, and
-   table-driven tests first; they should fail because APIs are absent.
-2. Implement Python errors, schemas, canonical msgpack, and frames, followed by
-   the pure session state machine.
-3. Implement the equivalent Go package and make both golden suites pass before
-   touching the server.
+1. Commit the shared `.proto`, normalized config fixture, and semantic tests
+   first; they should fail because generated bindings and APIs are absent.
+2. Define the shared Protobuf schema and generate Python and Go bindings, then
+   implement frames, semantic validation, and the pure session state machine.
+3. Prove semantic Python/Go interoperability before touching the server.
 4. Replace the example YAML and both config loaders, then migrate the command and
    harness config atomically.
 5. Add framed HELLO/STATUS to the stub server and migrate readiness/lifecycle
@@ -602,4 +580,4 @@ frames re-encode canonically, and errors use a registered code.
 
 ## Exit Gate
 
-Phase 1 is complete when Python and Go pass the same golden vectors and configuration fixture, all malformed-input tests fail closed without large allocation, no callback or direct-result-delivery field remains, and later phases can depend on the schemas without inventing new wire fields.
+Phase 1 is complete when Python and Go interoperate through the shared Protobuf schema and configuration fixture, malformed input fails closed without large allocation, no callback or direct-result-delivery field remains, and later phases can evolve the schema using Protobuf compatibility rules.

@@ -1,4 +1,4 @@
-// Package protocol implements the wire frame, msgpack envelope, and pure
+// Package protocol implements the thin wire frame, Protobuf envelope, and pure
 // session state machine shared with the Python SDK.
 package protocol
 

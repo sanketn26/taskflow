@@ -12,7 +12,7 @@ This is a post-v0.1 feature. It does not block the Python-first release gate.
 ## Prerequisites
 
 Phases 1–4 are complete, and the Phase 3 worker conformance suite is published as
-language-independent golden frames and behavioral scenarios. The agent already
+the shared Protobuf schema and behavioral scenarios. The agent already
 supports named worker pools, capability registration, portable values, leases,
 object transfer, and replayable Runtime results.
 
@@ -73,8 +73,8 @@ sdk/nodejs/test/{protocol,client,worker,conformance}.test.ts
 
 ## Required Tests
 
-- Consume every Phase 1 golden frame and portable-value vector without a
-  Node-generated alternate fixture.
+- Generate bindings from the Phase 1 `.proto` and consume every portable-value
+  vector without a Node-generated alternate fixture.
 - Register alongside synthetic Python and Go workers; only compatible task
   implementations receive leases, with labels applied after compatibility.
 - Execute success, thrown Error, rejected non-Error, object-backed input/result,

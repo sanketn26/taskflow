@@ -104,13 +104,22 @@ def test_worker_must_register_compatible_capabilities_before_pull():
         session.authorize(state, MessageType.PULL)
     assert exc.value.code == "not_registered"
     registration = TaskRegistration(
-        "w", 1, [TaskCapability("task", "1", "value", ["msgpack"])]
+        worker_id="w",
+        generation=1,
+        tasks=[
+            TaskCapability(
+                task_name="task",
+                task_version="1",
+                invocation="value",
+                codecs=["msgpack"],
+            )
+        ],
     )
     session.register_tasks(state, registration)
     session.authorize(state, MessageType.PULL)
     session.register_tasks(state, registration)
     with pytest.raises(ProtocolDecodeError) as exc:
-        session.register_tasks(state, TaskRegistration("w", 1, []))
+        session.register_tasks(state, TaskRegistration(worker_id="w", generation=1))
     assert exc.value.code == "task_conflict"
 
 
@@ -129,7 +138,16 @@ def test_non_python_worker_rejects_python_only_capability():
         session.register_tasks(
             state,
             TaskRegistration(
-                "w", 1, [TaskCapability("task", "1", "python_args", ["cloudpickle"])]
+                worker_id="w",
+                generation=1,
+                tasks=[
+                    TaskCapability(
+                        task_name="task",
+                        task_version="1",
+                        invocation="python_args",
+                        codecs=["cloudpickle"],
+                    )
+                ],
             ),
         )
     assert exc.value.code == "task_conflict"

@@ -3,6 +3,8 @@ package protocol
 import (
 	"bytes"
 	"crypto/sha256"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // ConnectionState is the mutable per-connection state owned by the
@@ -71,7 +73,7 @@ func (Session) Register(state *ConnectionState, role string, ownerID []byte, wor
 func (Session) RegisterWorker(state *ConnectionState, hello *Hello) {
 	state.Registered = true
 	state.Role = "worker"
-	state.WorkerID = hello.WorkerID
+	state.WorkerID = hello.WorkerId
 	state.Runtime = hello.Runtime
 	state.Codecs = make(map[string]bool, len(hello.Codecs))
 	for _, codec := range hello.Codecs {
@@ -104,7 +106,7 @@ func (Session) RegisterTasks(state *ConnectionState, registration *TaskRegistrat
 	if state.Role != "worker" {
 		return NewDecodeError(RoleForbidden, "only workers register tasks")
 	}
-	if registration.WorkerID != state.WorkerID {
+	if registration.WorkerId != state.WorkerID {
 		return NewDecodeError(OwnerMismatch, "worker_id does not match HELLO")
 	}
 	for _, task := range registration.Tasks {
@@ -120,7 +122,7 @@ func (Session) RegisterTasks(state *ConnectionState, registration *TaskRegistrat
 	if registration.Generation < state.CapabilityGeneration {
 		return NewDecodeError(TaskConflict, "stale capability generation")
 	}
-	encoded, err := registration.Encode()
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(registration)
 	if err != nil {
 		return err
 	}

@@ -112,25 +112,28 @@ func (s *Server) dispatch(conn net.Conn, state *protocol.ConnectionState, sessio
 	switch frame.MessageType {
 	case protocol.MessageHello:
 		hello := value.(*protocol.Hello)
-		session.Register(state, hello.Role, hello.OwnerID, hello.WorkerID)
+		session.Register(state, hello.Role, hello.OwnerId, hello.WorkerId)
 		ack, _ := protocol.NewAck("hello", nil)
 		return s.sendAck(conn, frame, ack)
 
 	case protocol.MessageStatus:
 		snapshot := &protocol.StatusSnapshot{
 			Version:            s.version,
-			PID:                uint64(os.Getpid()),
+			Pid:                uint64(os.Getpid()),
 			Ready:              true,
 			TaskCounts:         map[string]uint64{},
 			ActiveLeases:       0,
-			WorkerPIDs:         []uint64{},
+			WorkerPids:         []uint64{},
 			WorkerRestarts:     0,
 			StorageHealthy:     true,
 			ClusterMembers:     0,
 			KafkaOutboxPending: 0,
 			LastErrorCode:      nil,
 		}
-		payload := snapshot.Encode()
+		payload, err := protocol.EncodePayload(protocol.MessageStatus, snapshot)
+		if err != nil {
+			return false
+		}
 		return s.sendFrame(conn, protocol.Frame{
 			Version: 1, MessageType: protocol.MessageStatus, TaskID: frame.TaskID,
 			RequestID: frame.RequestID, Payload: payload,
@@ -145,7 +148,7 @@ func (s *Server) dispatch(conn net.Conn, state *protocol.ConnectionState, sessio
 }
 
 func (s *Server) sendAck(conn net.Conn, frame *protocol.Frame, ack *protocol.Ack) bool {
-	payload, err := ack.Encode()
+	payload, err := protocol.EncodePayload(protocol.MessageAck, ack)
 	if err != nil {
 		return false
 	}
@@ -160,9 +163,13 @@ func (s *Server) sendError(conn net.Conn, frame *protocol.Frame, de *protocol.De
 		Code: de.Code, Message: de.Message,
 		Retryable: protocol.ErrorRetryable[de.Code], Details: map[string]string{},
 	}
+	payload, err := protocol.EncodePayload(protocol.MessageError, errPayload)
+	if err != nil {
+		return false
+	}
 	return s.sendFrame(conn, protocol.Frame{
 		Version: 1, MessageType: protocol.MessageError, TaskID: frame.TaskID,
-		RequestID: frame.RequestID, Flags: protocol.FlagError, Payload: errPayload.Encode(),
+		RequestID: frame.RequestID, Flags: protocol.FlagError, Payload: payload,
 	})
 }
 

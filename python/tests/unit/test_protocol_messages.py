@@ -1,223 +1,74 @@
 from __future__ import annotations
 
-from pathlib import Path
+import math
 
 import pytest
-import yaml
+from google.protobuf.internal.encoder import _VarintBytes
 
-from taskwire.protocol.errors import ProtocolDecodeError
-from taskwire.protocol.frames import (
-    Flag,
-    Frame,
-    MessageType,
-    decode_header,
-    encode_frame,
-)
 from taskwire.protocol import messages as m
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
-MANIFEST = REPO_ROOT / "testdata" / "protocol" / "v1" / "manifest.yaml"
-INVALID_DIR = REPO_ROOT / "testdata" / "protocol" / "v1" / "invalid"
-MAX_PAYLOAD = 16 * 1024 * 1024
+from taskwire.protocol.errors import ProtocolDecodeError
+from taskwire.protocol.frames import MessageType
 
 
-def _cases() -> list[dict]:
-    return yaml.safe_load(MANIFEST.read_text())["cases"]
+def test_control_payload_is_protobuf_envelope():
+    payload = m.encode_payload(MessageType.STATUS, m.StatusRequest())
+    envelope = m.ControlMessage.FromString(payload)
+    assert envelope.WhichOneof("body") == "status_request"
 
 
-@pytest.mark.parametrize("case", _cases(), ids=lambda c: c["name"])
-def test_golden_vector_frame_bytes(case):
-    payload = bytes.fromhex(case["payload_hex"])
-    frame_bytes = bytes.fromhex(case["frame_hex"])
-    message_type = MessageType[case["message_type"]]
-    task_id = bytes.fromhex(case["task_id_hex"])
-
-    flags = Flag.NONE
-    for name in case["flags"]:
-        flags |= Flag[name.upper()]
-
-    frame = Frame(1, message_type, task_id, case["request_id"], flags, payload)
-    assert encode_frame(frame, max_payload_bytes=MAX_PAYLOAD) == frame_bytes
-
-    header = decode_header(
-        frame_bytes[: len(frame_bytes) - len(payload)], max_payload_bytes=MAX_PAYLOAD
-    )
-    assert header.message_type == message_type
-    assert header.task_id == task_id
-    assert header.request_id == case["request_id"]
-
-
-@pytest.mark.parametrize("case", _cases(), ids=lambda c: c["name"])
-def test_golden_vector_payload_round_trips(case):
-    payload = bytes.fromhex(case["payload_hex"])
-    message_type = MessageType[case["message_type"]]
-
-    value = m.decode_payload(message_type, payload)
-    re_encoded = m.encode_payload(message_type, value)
-    assert re_encoded == payload
-
-    value_again = m.decode_payload(message_type, re_encoded)
-    assert value_again == value
-
-
-def _invalid_cases() -> list[tuple[str, bytes, dict]]:
-    out = []
-    for bin_path in sorted(INVALID_DIR.glob("*.bin")):
-        meta = yaml.safe_load((bin_path.with_suffix(".yaml")).read_text())
-        out.append((bin_path.stem, bin_path.read_bytes(), meta))
-    return out
-
-
-@pytest.mark.parametrize(
-    "name,data,meta", _invalid_cases(), ids=lambda v: v if isinstance(v, str) else ""
-)
-def test_invalid_corpus_fails_with_stable_code(name, data, meta):
-    max_payload = meta["max_payload_bytes"]
-    with pytest.raises(ProtocolDecodeError) as exc:
-        header_bytes = data[:31]
-        if len(header_bytes) < 31:
-            raise ProtocolDecodeError("malformed_payload", "truncated header")
-        header = decode_header(header_bytes, max_payload_bytes=max_payload)
-        payload = data[31:]
-        if len(payload) != header.payload_len:
-            raise ProtocolDecodeError("malformed_payload", "truncated payload")
-        m.decode_payload(header.message_type, payload)
-    assert exc.value.code == meta["expected_error_code"]
-
-
-# -- canonical encoding profile -------------------------------------------
-
-
-def test_map_keys_sorted_ascending_utf8():
-    ref = m.ObjectRef(store="s", key="k", size=1, sha256=b"\x00" * 32, codec="bytes")
-    encoded = ref.to_bytes()
-    # fixmap(5) then keys in ascending order: codec, key, sha256, size, store
-    assert encoded[0] == 0x85
-    idx = 1
-    for expected_key in ("codec", "key", "sha256", "size", "store"):
-        assert (
-            encoded[idx : idx + 1 + len(expected_key)]
-            == bytes([0xA0 | len(expected_key)]) + expected_key.encode()
-        )
-        # skip past this key's value by decoding round-trip instead of hand parsing
-        break
-    decoded = m.ObjectRef.from_dict(m._unpack_strict(encoded))
-    assert decoded == ref
-
-
-def test_fixed_width_uint64_regardless_of_value():
-    ref = m.ObjectRef(store="s", key="k", size=0, sha256=b"\x00" * 32, codec="bytes")
-    encoded = ref.to_bytes()
-    # "size" key followed by 0xcf (uint64 marker) even though value is 0
-    assert b"\xa4size\xcf" in encoded
-
-
-def test_duplicate_key_rejected():
-    payload = (
-        bytes([0x82])
-        + m._pack_str("lease_id")
-        + m._pack_bin(b"\x00" * 16)
-        + m._pack_str("lease_id")
-        + m._pack_bin(b"\x00" * 16)
-    )
-    with pytest.raises(ProtocolDecodeError) as exc:
-        m.decode_payload(MessageType.HEARTBEAT, payload)
-    assert exc.value.code == "invalid_message"
-
-
-def test_unknown_key_rejected():
-    payload = (
-        bytes([0x82])
-        + m._pack_str("lease_id")
-        + m._pack_bin(b"\x00" * 16)
-        + m._pack_str("extra")
-        + m._pack_nil()
-    )
-    with pytest.raises(ProtocolDecodeError) as exc:
-        m.decode_payload(MessageType.HEARTBEAT, payload)
-    assert exc.value.code == "invalid_message"
-
-
-def test_missing_required_key_rejected():
-    payload = bytes([0x80])
-    with pytest.raises(ProtocolDecodeError) as exc:
-        m.decode_payload(MessageType.HEARTBEAT, payload)
-    assert exc.value.code == "invalid_message"
-
-
-def test_trailing_bytes_rejected():
-    payload = m.HeartbeatRequest(lease_id=b"\x00" * 16).to_bytes() + b"\x00"
-    with pytest.raises(ProtocolDecodeError) as exc:
-        m.decode_payload(MessageType.HEARTBEAT, payload)
-    assert exc.value.code == "invalid_message"
-
-
-def test_bad_id_size_rejected():
-    bad_id = b"\x00" * 15  # not 16 bytes
-    payload = bytes([0x81]) + m._pack_str("lease_id") + m._pack_bin(bad_id)
-    with pytest.raises(ProtocolDecodeError) as exc:
-        m.decode_payload(MessageType.HEARTBEAT, payload)
-    assert exc.value.code == "invalid_message"
-
-
-def test_wrong_type_rejected():
-    payload = bytes([0x81]) + m._pack_str("lease_id") + m._pack_str("not binary")
-    with pytest.raises(ProtocolDecodeError) as exc:
-        m.decode_payload(MessageType.HEARTBEAT, payload)
-    assert exc.value.code == "invalid_message"
-
-
-def test_out_of_range_uint32_rejected():
-    with pytest.raises(ProtocolDecodeError):
-        m._uint(2**32, 32, "limit")
-
-
-def test_utf8_string_round_trips():
-    req = m.PullRequest(worker_id="worker-日本", capability_generation=1)
-    encoded = req.to_bytes()
-    decoded = m.decode_payload(MessageType.PULL, encoded)
-    assert decoded == req
-
-
-def test_empty_collections_round_trip():
-    req = m.PullRequest(worker_id="w", capability_generation=1)
-    encoded = req.to_bytes()
-    decoded = m.decode_payload(MessageType.PULL, encoded)
-    assert decoded == req
-
-    snap = m.TaskSnapshot(tasks=[])
-    encoded_snap = snap.to_bytes()
-    decoded_snap = m.decode_payload(MessageType.TASK_QUERY, encoded_snap)
-    assert decoded_snap == snap
-
-
-def test_portable_value_profile_is_canonical_and_rejects_runtime_values():
-    value = {"z": [None, True, -33, 2**64 - 1, 1.5], "a": b"x"}
-    encoded = m.encode_portable_value(value)
-    assert encoded[1:3] == b"\xa1a"
-    assert m.decode_portable_value(encoded) == value
-    for invalid in (float("nan"), float("inf"), (1, 2), {1: "x"}, 2**64):
-        with pytest.raises(ProtocolDecodeError):
-            m.encode_portable_value(invalid)
-
-
-def test_worker_hello_and_task_registration_round_trip():
+def test_generated_message_round_trip():
     hello = m.Hello(
         role="worker",
-        worker_id="w",
+        worker_id="worker-1",
         runtime="nodejs",
         runtime_version="22",
         sdk_version="0.1.0",
         codecs=["msgpack", "bytes"],
     )
-    assert (
-        m.decode_payload(MessageType.HELLO, m.encode_payload(MessageType.HELLO, hello))
-        == hello
-    )
+    payload = m.encode_payload(MessageType.HELLO, hello)
+    assert m.decode_payload(MessageType.HELLO, payload) == hello
+
+
+def test_frame_type_and_protobuf_body_must_agree():
+    payload = m.encode_payload(MessageType.HELLO, m.Hello(role="admin"))
+    with pytest.raises(ProtocolDecodeError, match="does not match") as exc:
+        m.decode_payload(MessageType.STATUS, payload)
+    assert exc.value.code == "invalid_message"
+
+
+def test_malformed_protobuf_is_rejected():
+    with pytest.raises(ProtocolDecodeError) as exc:
+        m.decode_payload(MessageType.HELLO, b"\x9a\xff")
+    assert exc.value.code == "malformed_payload"
+
+
+def test_unknown_nested_fields_are_accepted_and_preserved():
+    hello = m.Hello(role="admin")
+    raw = hello.SerializeToString() + _VarintBytes((100 << 3) | 0) + _VarintBytes(42)
+    hello_with_unknown = m.Hello.FromString(raw)
+    payload = m.encode_payload(MessageType.HELLO, hello_with_unknown)
+    decoded = m.decode_payload(MessageType.HELLO, payload)
+    assert decoded.SerializeToString().endswith(_VarintBytes((100 << 3) | 0) + b"*")
+
+
+def test_runtime_owner_id_is_semantically_validated():
+    with pytest.raises(ProtocolDecodeError) as exc:
+        m.encode_payload(MessageType.HELLO, m.Hello(role="runtime", owner_id=b"short"))
+    assert exc.value.code == "invalid_message"
+
+
+def test_registration_identity_and_generation_are_validated():
     registration = m.TaskRegistration(
         worker_id="w",
         generation=1,
-        tasks=[m.TaskCapability("task", "1", "value", ["msgpack"])],
+        tasks=[
+            m.TaskCapability(
+                task_name="task",
+                task_version="1",
+                invocation="value",
+                codecs=["msgpack"],
+            )
+        ],
     )
     assert (
         m.decode_payload(
@@ -228,53 +79,101 @@ def test_worker_hello_and_task_registration_round_trip():
     )
 
 
-def test_schema_construction_rejects_invalid_encoder_values():
+def test_value_ref_uses_protobuf_oneof():
+    ref = m.ValueRef(inline=b"value", codec="msgpack")
+    assert ref.WhichOneof("location") == "inline"
+    m._validate(ref)
     with pytest.raises(ProtocolDecodeError):
-        m.ObjectRef(store="s", key="k", size=0, sha256=b"short", codec="bytes")
+        m._validate(m.ValueRef(inline=b"value"))
+
+
+def test_completion_requires_outcome_oneof():
     with pytest.raises(ProtocolDecodeError):
-        m.Hello(role="runtime", owner_id=b"short")
+        m.encode_payload(MessageType.COMPLETE, m.Completion(lease_id=b"0" * 16))
+
+
+def test_wrong_generated_type_is_rejected():
+    with pytest.raises(ProtocolDecodeError) as exc:
+        m.encode_payload(MessageType.HEARTBEAT, m.PullRequest(worker_id="w"))
+    assert exc.value.code == "invalid_message"
+
+
+def test_portable_msgpack_is_separate_and_canonical():
+    value = {"z": [None, True, -33, 2**64 - 1, 1.5], "a": b"x"}
+    encoded = m.encode_portable_value(value)
+    assert encoded[1:3] == b"\xa1a"
+    assert m.decode_portable_value(encoded) == value
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, {1: "bad"}, 2**64, object()])
+def test_portable_msgpack_rejects_nonportable_values(value):
     with pytest.raises(ProtocolDecodeError):
-        m.Hello(
-            role="worker",
-            worker_id="w",
-            runtime="go",
-            runtime_version="1.26",
-            sdk_version="0.1.0",
-            codecs=["msgpack", "msgpack"],
+        m.encode_portable_value(value)
+
+
+def test_typed_ack_fields_are_required_and_preserved():
+    task_id = b"1" * 16
+    ack = m.make_ack("submit", task_id=task_id)
+    assert ack.task_id == task_id
+    with pytest.raises(ProtocolDecodeError):
+        m.make_ack("submit")
+    with pytest.raises(ProtocolDecodeError):
+        m.make_ack("unknown")
+
+
+def test_nested_object_and_message_ids_are_validated():
+    envelope = m.TaskEnvelope(
+        owner_id=b"1" * 16,
+        task_name="task",
+        task_version="1",
+        invocation="value",
+        input=m.ValueRef(
+            object=m.ObjectRef(store="s", key="k", codec="bytes", sha256=b"short")
+        ),
+    )
+    with pytest.raises(ProtocolDecodeError):
+        m.encode_payload(MessageType.SUBMIT, envelope)
+
+    completion = m.Completion(
+        result=m.ObjectRef(store="s", key="k", codec="bytes", sha256=b"0" * 32)
+    )
+    with pytest.raises(ProtocolDecodeError):
+        m.encode_payload(MessageType.COMPLETE, completion)
+
+
+def test_hello_role_fields_are_exclusive_and_codecs_unique():
+    with pytest.raises(ProtocolDecodeError):
+        m.encode_payload(
+            MessageType.HELLO,
+            m.Hello(role="runtime", owner_id=b"1" * 16, worker_id="unexpected"),
+        )
+    with pytest.raises(ProtocolDecodeError):
+        m.encode_payload(
+            MessageType.HELLO,
+            m.Hello(
+                role="worker",
+                worker_id="w",
+                runtime="go",
+                runtime_version="1",
+                sdk_version="1",
+                codecs=["msgpack", "msgpack"],
+            ),
         )
 
 
-# -- union validation --------------------------------------------------
-
-
-def test_value_ref_requires_exactly_one_branch():
-    with pytest.raises(ProtocolDecodeError):
-        m.ValueRef()
-    obj = m.ObjectRef(store="s", key="k", size=0, sha256=b"\x00" * 32, codec="bytes")
-    with pytest.raises(ProtocolDecodeError):
-        m.ValueRef(inline=b"x", codec="msgpack", object=obj)
-
-
-def test_completion_requires_exactly_one_of_result_or_failure():
-    with pytest.raises(ProtocolDecodeError):
-        m.Completion(lease_id=b"\x00" * 16, result=None, failure=None)
-    obj = m.ObjectRef(store="s", key="k", size=0, sha256=b"\x00" * 32, codec="bytes")
-    failure = m.Failure(
-        code="task_exception", message="x", details=None, retryable=False
-    )
-    with pytest.raises(ProtocolDecodeError):
-        m.Completion(lease_id=b"\x00" * 16, result=obj, failure=failure)
-
-
-def test_ack_requires_exact_field_set_for_kind():
-    with pytest.raises(ProtocolDecodeError):
-        m.Ack(kind="submit", fields={})
-    with pytest.raises(ProtocolDecodeError):
-        m.Ack(kind="hello", fields={"task_id": b"\x00" * 16})
-
-
-def test_encode_payload_rejects_wrong_type_for_message():
-    req = m.PullRequest(worker_id="w", capability_generation=1)
+def test_portable_duplicate_key_error_matches_go():
+    duplicate = bytes([0x82, 0xA1, ord("a"), 1, 0xA1, ord("a"), 2])
     with pytest.raises(ProtocolDecodeError) as exc:
-        m.encode_payload(MessageType.HEARTBEAT, req)
+        m.decode_portable_value(duplicate)
     assert exc.value.code == "invalid_message"
+
+
+def test_portable_trailing_byte_classification_matches_go():
+    """Align with Go TestPortableDuplicateKeyAndTrailingClassification."""
+    with pytest.raises(ProtocolDecodeError) as full:
+        m.decode_portable_value(bytes([0x01, 0x02]))
+    assert full.value.code == "invalid_message"
+
+    with pytest.raises(ProtocolDecodeError) as truncated:
+        m.decode_portable_value(bytes([0x01, 0xD9]))
+    assert truncated.value.code == "malformed_payload"

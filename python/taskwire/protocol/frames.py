@@ -1,5 +1,5 @@
 """31-byte frame header codec: version, type, task ID, request ID, flags,
-payload length, followed by ``payload_len`` bytes of msgpack payload.
+payload length, followed by ``payload_len`` bytes of Protobuf payload.
 """
 
 from __future__ import annotations

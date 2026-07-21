@@ -134,7 +134,9 @@ class Session:
                 raise ProtocolDecodeError(
                     TASK_CONFLICT, "runtime cannot provide Python-only capability"
                 )
-        fingerprint = hashlib.sha256(registration.to_bytes()).digest()
+        fingerprint = hashlib.sha256(
+            registration.SerializeToString(deterministic=True)
+        ).digest()
         generation = registration.generation
         if generation < state.capability_generation:
             raise ProtocolDecodeError(TASK_CONFLICT, "stale capability generation")
