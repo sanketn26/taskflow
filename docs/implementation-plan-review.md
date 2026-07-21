@@ -21,4 +21,4 @@ Phases 0–4 form the single-node pre-alpha MVP. Phase 5 clustering, Phase 6 dis
 
 Deferred items include exactly-once execution, cancellation of running/remotely owned work, automatic binary downloads, untested PostgreSQL/S3 adapters, and claims that a pure-Python heartbeat survives arbitrary GIL-holding native code.
 
-The authoritative implementation sequence is the numbered set under `docs/phases/`.
+The authoritative implementation sequence is the numbered set under `docs/phases/`. Phase 12 adds an optional Flower-class admin console and ops HTTP admin API; it is post-MVP and does not block Phases 0–4.

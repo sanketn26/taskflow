@@ -94,3 +94,122 @@ and protocol conformance suites, Node.js and Python implementations of the same
 portable task are interchangeable to the scheduler, client replay survives
 restart, and no Phase 1 wire/configuration field or Go storage schema changes were
 required.
+
+---
+
+## Implementation Guide
+
+> **Post-v0.1.** Requires Phases 1–4 + Phase 3 portable conformance fixtures.
+> No `python_args` / `cloudpickle` / inline functions.
+
+### Package skeleton
+
+```text
+sdk/nodejs/
+  package.json
+  tsconfig.json
+  src/
+    protocol/{frame,messages,session}.ts
+    codec/portable.ts
+    client.ts
+    worker.ts
+    registry.ts
+    errors.ts
+    index.ts
+  test/
+    protocol.test.ts
+    worker.test.ts
+    client.test.ts
+    conformance.test.ts
+```
+
+### Worker API (implement to match)
+
+```typescript
+import { TaskwireWorker } from "@taskwire/sdk";
+
+const worker = new TaskwireWorker({ socket: process.env.TASKWIRE_SOCKET! });
+
+worker.task(
+  { name: "image.resize", version: "2" },
+  async (input: { path: string; width: number }, ctx) => {
+    ctx.signal.throwIfAborted(); // cooperative lease-loss / shutdown
+    return await resize(input);
+  },
+);
+
+await worker.run();
+```
+
+### Client API
+
+```typescript
+import { TaskwireClient } from "@taskwire/sdk";
+
+const client = await TaskwireClient.connect({ socket, ownerId? });
+const handle = await client.submit("image.resize", "2", { path, width: 256 });
+const result = await handle.result({ timeoutMs: 30_000 });
+await client.close();
+```
+
+### Implementation loop (mirror Phase 3)
+
+```typescript
+// 1. HELLO worker (runtime: "nodejs", codecs: ["msgpack","bytes"])
+// 2. REGISTER_TASKS generation 1
+// 3. PULL → TASK | empty
+// 4. start heartbeat (ttl/3)
+// 5. OBJECT_GET input if needed; verify sha256
+// 6. invoke handler
+// 7. OBJECT_PUT result; COMPLETE
+// 8. on reconnect: new capability namespace, full re-register
+```
+
+### Portable codec rules (strict)
+
+```typescript
+// Accept: null, boolean, bigint in int64 range, number finite (safe int check
+// when converting from bigint), string, Buffer/Uint8Array, array, object with
+// string keys only.
+// Reject: undefined, symbol, function, Date, NaN, Infinity, non-string keys,
+// cyclic structures, unsafe integer Number conversions.
+```
+
+### Agent pool config
+
+```yaml
+workers:
+  pools:
+    - name: node-default
+      runtime: nodejs
+      command: ["node", "dist/worker.js"]
+      count: 2
+      working_directory: "/app"
+      labels: {workload: general}
+```
+
+### Tests
+
+```bash
+cd sdk/nodejs && npm test
+# shared vectors:
+#   consume testdata/portable/* without regenerating alternate fixtures
+# multi-runtime: register Node + synthetic Python capabilities; only compatible leases
+```
+
+### Done checklist
+
+- [ ] Published package works in clean project (no monorepo path hacks)  
+- [ ] Interchangeable with Python for same portable `name@version`  
+- [ ] bigint boundaries tested  
+- [ ] No agent schema/wire changes  
+- [ ] Fail closed on malformed frames (no process crash)  
+
+### Review request
+
+```text
+Please review Phase 10.
+Package: sdk/nodejs tarball / npm pack
+Commands: npm test; multi-runtime lease tests; clean install
+Gaps: ...
+```

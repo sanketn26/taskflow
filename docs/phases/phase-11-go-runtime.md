@@ -83,3 +83,111 @@ worker conformance suites, Go and Python implementations of one portable task ar
 interchangeable to the scheduler, client replay survives restart, race tests are
 green, and no Phase 1 wire/configuration field or Go agent storage schema changes
 were required.
+
+---
+
+## Implementation Guide
+
+> **Post-v0.1.** Independent of Phase 10. SDK may import `agent/pkg/protocol`
+> only if that package stays dependency-light; **never** import `agent/internal/*`.
+
+### Module layout
+
+```text
+sdk/go/taskwire/
+  go.mod                 # module path e.g. github.com/sanketn26/taskwire/sdk/go/taskwire
+  client.go
+  worker.go
+  registry.go
+  codec.go
+  errors.go
+  *_test.go
+```
+
+### Worker registration
+
+```go
+package main
+
+import (
+	"context"
+
+	"github.com/sanketn26/taskwire/sdk/go/taskwire"
+)
+
+func main() {
+	w := taskwire.NewWorker(taskwire.WorkerOptions{
+		Socket: os.Getenv("TASKWIRE_SOCKET"),
+	})
+	taskwire.Register(w, "image.resize", "2",
+		func(ctx context.Context, in ResizeInput) (ResizeResult, error) {
+			return resize(ctx, in)
+		},
+	)
+	if err := w.Run(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+### Client
+
+```go
+c, err := taskwire.Dial(taskwire.ClientOptions{Socket: socketPath, OwnerID: owner})
+h, err := c.Submit(ctx, "image.resize", "2", ResizeInput{Path: p, Width: 256})
+out, err := h.Wait(ctx) // or WaitTimeout
+// Cancel, Reattach parallel to Python Runtime
+```
+
+### Codec rules
+
+```go
+// Map supported field types → portable msgpack.
+// Reject: chan, func, unsafe pointers, non-string map keys, cycles,
+// architecture-dependent int overflow, implicit encoding/json surprises.
+// Explicit bytes codec for opaque application schemas.
+```
+
+### Worker loop (same as Phase 3 contract)
+
+```go
+// HELLO runtime=go → REGISTER_TASKS → PULL
+// heartbeat on lease; ctx cancel on shutdown/lease loss (cooperative)
+// recover panic → Failure{code: task_exception} (do not hide registry/startup panics)
+// COMPLETE fenced; stale_lease → stop
+```
+
+### External module test
+
+```bash
+# from a temp module outside the monorepo:
+go mod init example.com/twtest
+go get github.com/sanketn26/taskwire/sdk/go/taskwire@<commit>
+# no replace directives required
+go test ./...
+```
+
+### Race + conformance
+
+```bash
+cd sdk/go/taskwire && go test -race ./...
+# portable vectors from testdata/portable
+# multi-runtime capability filtering with synthetic python/nodejs workers
+```
+
+### Done checklist
+
+- [ ] External module import works  
+- [ ] Interchangeable portable task with Python  
+- [ ] Client replay/reattach  
+- [ ] `-race` green; no unbounded alloc on bad frames  
+- [ ] No wire/schema changes  
+
+### Review request
+
+```text
+Please review Phase 11.
+Module: sdk/go/taskwire
+Commands: go test -race ./...; external module smoke
+Gaps: ...
+```

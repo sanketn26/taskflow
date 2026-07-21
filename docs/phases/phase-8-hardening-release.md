@@ -63,7 +63,7 @@ Metrics include:
 - cluster membership, transfer state/age, auth failures, forwarded completions;
 - Kafka outbox pending age/count, retries, permanent errors, delivery latency.
 
-Metrics labels must be bounded; task/owner IDs are never labels. Health endpoints distinguish liveness from readiness and fail readiness on unusable configured state/object storage.
+Metrics labels must be bounded; task/owner IDs are never labels. Health endpoints distinguish liveness from readiness and fail readiness on unusable configured state/object storage. The Flower-class admin console, versioned `/admin/api/v1`, embedded UI, and full ops HTTP path contract are Phase 12; this phase still requires probe/metrics behavior sufficient for release when those surfaces are enabled, and must not document the console as shipped until Phase 12’s exit gate is green.
 
 ## Security Gate
 
@@ -102,3 +102,136 @@ Measure submit-to-result p50/p95/p99, sustained tasks/s, SQLite contention, file
 ## Exit Gate
 
 Phase 8 is complete when final artifacts—not developer builds—pass clean-install E2E and the release chaos run, service and upgrade paths are tested, security/observability requirements are met, documentation makes no stronger guarantee than the tests, and optional features are labeled according to their own gates.
+
+---
+
+## Implementation Guide
+
+> **Do this after** the feature set you intend to ship has its own exit gates green
+> (minimum Phases 0–4). Optional cluster/storage/Kafka only if 5–7 passed.
+
+### Release profile file (create)
+
+```text
+docs/release/v0.1-profile.md
+```
+
+```markdown
+# v0.1 release profile
+- Core: Phases 0–4 (single node, SQLite/filesystem, Python only)
+- Cluster: yes|no (Phase 5)
+- Postgres/S3: yes|no (Phase 6)
+- Kafka: yes|no (Phase 7)
+- Platforms: linux/amd64, darwin/arm64, ...
+- Windows agent: unsupported
+```
+
+### CLI surface to implement
+
+```go
+// agent/cmd/taskwire-agent/main.go
+// subcommands:
+//   version
+//   run --config PATH          // canonical
+//   --config PATH              // alias for run during transition; test both
+//   validate-config --config PATH
+//   status --json --socket PATH
+//   migrate --config PATH [--dry-run]
+```
+
+```bash
+taskwire-agent validate-config --config taskwire.yaml
+taskwire-agent run --config taskwire.yaml
+taskwire-agent status --json --socket ./run/agent.sock
+```
+
+### Packaging work
+
+```text
+packaging/service/taskwire-agent.service   # systemd
+packaging/service/com.taskwire.agent.plist # launchd
+packaging/docker/Dockerfile                # non-root, volumes for state/objects
+```
+
+Wheel rules:
+
+```bash
+# Binary-bearing wheel must NOT be py3-none-any
+# Build on each target OS; tag e.g. manylinux / macosx
+make wheel
+python -m wheel tags dist/*.whl   # verify platform tag
+make smoke-wheel                  # clean venv E2E registered task
+```
+
+### Observability minimum
+
+```go
+// structured log fields (no payloads / raw owner_id / DSN secrets):
+// ts, level, component, node_id, task_id, owner_id_hash, lease_id, code, retryable
+
+// Prometheus metrics on metrics.listen_addr (if set):
+// taskwire_tasks{state=}
+// taskwire_submit_latency_seconds
+// taskwire_lease_stale_total
+// taskwire_workers{pool=}
+// taskwire_ipc_connections
+```
+
+Health (Phase 12 expands admin UI; Phase 8 still needs usable probes if HTTP enabled):
+
+```text
+GET /livez   → process up
+GET /readyz  → stores usable + socket listening
+```
+
+### Security checklist (execute)
+
+- [ ] Socket mode 0660 + ownership check at startup  
+- [ ] State/object dirs permissions verified  
+- [ ] Path traversal tests on filesystem store  
+- [ ] Frame size caps fuzzed  
+- [ ] `govulncheck`, dependency audit, secret scan in CI  
+- [ ] Threat model note in `docs/security.md` (Phase 9 may host final docs)
+
+### Performance evidence template
+
+```text
+docs/release/bench-YYYYMMDD.md
+Hardware / OS / Go / Python:
+Payload sizes:
+Workers:
+submit→result p50/p95/p99:
+tasks/s sustained:
+Comparison notes vs Celery+Redis (same hardware):
+```
+
+### Pre-tag checklist
+
+```bash
+# 1. freeze schemas
+# 2. all applicable phase exit gates
+make format lint unit integration smoke-wheel
+# 3. chaos nightly seed recorded green
+# 4. SBOM + checksums + provenance
+# 5. examples match shipped schema (Phase 9)
+# 6. version triple match: pyproject, agent -X version, wheel metadata
+git tag v0.1.0 <tested-commit>
+```
+
+### Done checklist
+
+- [ ] Release profile committed and honest about optional features  
+- [ ] Platform-tagged wheels; no agent-in-`any` wheel  
+- [ ] Service units + non-root container  
+- [ ] Clean-install E2E from CI artifacts  
+- [ ] Limitations published (at-least-once, cancel boundary, memory backend, GIL heartbeat)  
+
+### Review request
+
+```text
+Please review Phase 8 (release).
+Profile: <path>
+Artifacts: <CI URL or dist/>
+Commands: full gate list + chaos seed
+Gaps: ...
+```

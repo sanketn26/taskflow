@@ -94,3 +94,85 @@ Create a seeded chaos timeline (`TASKWIRE_CHAOS_SEED`) that records action, targ
 ## Exit Gate
 
 Phase 0 is complete when a clean virtual environment can install the built wheel, import `taskwire`, locate the matching built agent or report its absence clearly, run the pure-Python fallback, and execute the harness lifecycle test without reading the source checkout.
+
+---
+
+## Implementation Guide
+
+> **Status:** Baseline is present in this repository. Treat this section as a
+> residual checklist and orientation. If anything below is missing in your tree,
+> implement it before Phase 1/2 work.
+
+### What already exists (verify, do not re-invent)
+
+| Path | Role |
+|------|------|
+| `pyproject.toml` | Single version source; wheel includes staged agent binary |
+| `Makefile` | `format`, `lint`, `unit`, `integration`, `build-agent`, `wheel`, `smoke-wheel` |
+| `agent/cmd/taskwire-agent/` | Agent entrypoint (stub server until Phase 2) |
+| `python/taskwire/__init__.py` | `__version__`, public exports |
+| `python/taskwire/agent_locate.py` | `TASKWIRE_AGENT_PATH` then `taskwire/bin/taskwire-agent` |
+| `python/taskwire/_accel.py` | Optional accel; pure-Python fallback |
+| `harness/agent_harness.py` | Process lifecycle + isolated dirs |
+| `harness/timing.py` | `wait_until` deadline polling |
+| `harness/chaos.py` | Seeded `ChaosTimeline` / `TASKWIRE_CHAOS_SEED` |
+| `python/tests/unit/*` | Version, locate, accel fallback |
+| `python/tests/integration/*` | Lifecycle, wheel install, version parity |
+
+### Residual checklist
+
+```bash
+make format lint unit integration smoke-wheel
+```
+
+- [ ] `taskwire.__version__` matches `taskwire-agent version` (from `pyproject.toml`)
+- [ ] `find_agent_binary()` prefers `TASKWIRE_AGENT_PATH`, else packaged path
+- [ ] Missing binary raises `AgentNotFoundError` with actionable message
+- [ ] Pure-Python path works when native accel is absent
+- [ ] `AgentHarness` starts/stops stub agent; no orphan process/socket
+- [ ] Wheel install works with source tree not on `PYTHONPATH`
+- [ ] Pytest markers registered: `integration`, `chaos`, `cluster`, `kafka`, `resource`
+
+### Minimal harness shape (reference)
+
+```python
+# harness/agent_harness.py — public surface you must preserve
+class AgentHarness:
+    def __init__(self, base_dir: Path | None = None): ...
+    def start(self) -> None: ...
+    def stop(self, *, grace_s: float = 5.0) -> None: ...
+    def status(self) -> object: ...          # Phase 1+: StatusSnapshot
+    def worker_pids(self) -> list[int]: ...  # Phase 3 fills this
+    def kill(self) -> None: ...              # hard kill, keep storage
+    def restart(self) -> None: ...
+```
+
+### Agent discovery (reference)
+
+```python
+# python/taskwire/agent_locate.py
+def find_agent_binary() -> Path:
+    env = os.environ.get("TASKWIRE_AGENT_PATH")
+    if env:
+        p = Path(env)
+        if p.is_file() and os.access(p, os.X_OK):
+            return p
+        raise AgentNotFoundError(f"TASKWIRE_AGENT_PATH set but not executable: {env}")
+    packaged = Path(__file__).resolve().parent / "bin" / "taskwire-agent"
+    if packaged.is_file() and os.access(packaged, os.X_OK):
+        return packaged
+    raise AgentNotFoundError(
+        "taskwire-agent not found; set TASKWIRE_AGENT_PATH or install a "
+        "platform wheel that bundles the agent"
+    )
+```
+
+### Done checklist / review request
+
+```text
+Please review Phase 0.
+Commands: make format lint unit integration smoke-wheel
+Gaps: <none | list>
+```
+
+**Pass criteria:** Exit gate above + residual checklist green.

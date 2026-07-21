@@ -109,3 +109,135 @@ Phase 5 implements the cluster authentication, replay, transfer, ownership, and 
 ## Exit Gate
 
 Phase 5 is complete when authenticated multi-node chaos tests demonstrate task conservation, restart recovery, bounded ownership records, verified object movement, no task ping-pong, and origin-agent result replay without any worker-to-Runtime connection.
+
+---
+
+## Implementation Guide
+
+> **Gate:** Post-MVP. Start only after Phase 4 review passes. Do not change Phase 1
+> base frames; use `forwarded` flag + existing `ForwardedTask` / `ForwardedCompletion`.
+
+### File map
+
+```text
+agent/internal/cluster/{cluster,auth,transport,member}.go
+agent/internal/scheduler/scheduler.go
+agent/internal/state/transfer.go      # durable forwarding rows in TaskStateStore
+agent/internal/object/transfer.go     # agent-to-agent object stream
+harness/cluster.py
+harness/proxy.py
+python/tests/integration/test_cluster_*.py
+```
+
+### Ownership state machine (implement as persisted columns)
+
+```text
+queued ──► forwarding ──► forwarded ──► terminal
+   │                          ▲
+   └──────► leased ───────────┴── (local path; no forward)
+```
+
+```go
+type TransferState string
+const (
+	TransferForwarding TransferState = "forwarding"
+	TransferForwarded  TransferState = "forwarded"
+	// terminal lives on origin task row
+)
+
+type TransferRecord struct {
+	TaskID     TaskID
+	TransferID [16]byte
+	TargetNode string
+	State      TransferState
+	Attempt    uint32
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+```
+
+### Auth handshake (task channel only)
+
+```go
+// preface before any Phase 1 frame on cluster task port
+// AUTH_CHALLENGE {node_name, nonce[32], unix_ms}
+// AUTH_RESPONSE  {node_name, peer_nonce[32], nonce[32], unix_ms, mac[32]}
+// mac = HMAC-SHA256(key, version || name1 || name2 || nonces || timestamps)
+// reject clock skew, replayed nonce, wrong node name vs membership
+```
+
+### Transfer protocol (origin)
+
+```go
+func (o *Origin) Forward(ctx context.Context, task TaskRecord, target string) error {
+	// 1. tx: queued → forwarding, new transfer_id
+	// 2. ensure remote has objects (copy filesystem refs if needed)
+	// 3. send SUBMIT with forwarded flag + ForwardedTask
+	// 4. on durable ACK: forwarding → forwarded
+	// 5. on timeout: reconcile; do NOT immediately double-queue
+}
+```
+
+### Remote import + complete
+
+```go
+func (r *Remote) ImportForwarded(ft *pb.ForwardedTask) error {
+	// idempotent by task_id+transfer_id; durable Create foreign row
+	// ACK only after durability + required objects present
+}
+
+func (r *Remote) OnLocalComplete(taskID, leaseID, transferID, result) error {
+	// fence local lease; send origin ForwardedCompletion
+	// retire foreign after origin ACK + retention
+}
+```
+
+### Scheduler / steal
+
+```go
+// Local eligible preferred unless routing rule says remote.
+// STEAL only queued, unleased, not already forwarded.
+// Forwarded tasks: never re-forward or re-steal (one hop).
+```
+
+### Harness composition
+
+```python
+# harness/cluster.py
+class ClusterHarness:
+    def __init__(self, n: int = 2):
+        self.nodes = [AgentHarness(base_dir=...) for _ in range(n)]
+    def start_all(self): ...
+    def stop_all(self): ...
+
+# harness/proxy.py — drop/delay/partition between advertise addrs
+```
+
+### Test plan (minimum)
+
+| Test | Assert |
+|------|--------|
+| `cluster.enabled: false` | no gossip/task ports |
+| wrong encryption key | auth fail, no tasks |
+| label route GPU→node B | task runs on B, RESULT on origin A |
+| concurrent steal | one winner |
+| crash mid-forward | recovery from SQLite transfer state |
+| partition + heal | conservation; duplicates only after ownership timeout |
+| Runtime reconnect on origin | cursor replay unchanged |
+
+### Done checklist
+
+- [ ] Auth required unless `allow_insecure` (dev only)  
+- [ ] One-hop forward only  
+- [ ] Origin owns Runtime RESULT path  
+- [ ] Object copy verified (size+sha256)  
+- [ ] Chaos: conservation, no leaked transfers  
+- [ ] Single-node suite still green with clustering off  
+
+### Review request
+
+```text
+Please review Phase 5.
+Commands: make unit integration; pytest -m cluster; chaos cluster suite
+Gaps: ...
+```

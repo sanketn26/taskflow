@@ -173,3 +173,143 @@ config file, multi-agent shared-backend tests show no double-claim or lost
 completion, and Phase 8's release-scope gate can honestly advertise
 PostgreSQL/S3 support backed by passing tests rather than configuration
 placeholders alone.
+
+---
+
+## Implementation Guide
+
+> **Independent of Phase 5.** Shared Postgres/S3 can run with clustering off.
+> Implement **exactly** the Phase 2 interfaces—no new store methods for callers.
+
+### File map
+
+```text
+agent/internal/state/postgres.go
+agent/internal/state/postgres_migrate.go
+agent/internal/object/s3.go
+agent/internal/config/config.go          # additive postgres/s3 fields
+python/taskwire/config.py                # parity
+agent/internal/state/postgres_test.go    # conformance + testcontainers
+agent/internal/object/s3_test.go         # MinIO or similar
+```
+
+### Step 1 — Config (both languages)
+
+```yaml
+storage:
+  state:
+    type: postgres
+    dsn: "postgres://taskwire@localhost:5432/taskwire?sslmode=disable"
+    postgres_pool_max_conns: 10
+    postgres_statement_timeout_ms: 5000
+  objects:
+    default: shared
+    stores:
+      shared:
+        type: s3
+        bucket: taskwire-objects
+        region: us-east-1
+        prefix: "prod/"
+        endpoint: "http://127.0.0.1:9000"  # empty = AWS
+        credentials_env: TASKWIRE_S3_CREDS
+        multipart_threshold_bytes: 8388608
+```
+
+Validation:
+
+```go
+// type postgres ⇒ dsn non-empty; no sqlite_* fields present
+// type s3 ⇒ bucket, region, credentials_env non-empty; no filesystem root
+// wrong-backend fields ⇒ invalid_config
+// unknown type ⇒ unsupported_backend
+```
+
+Credential resolution at **agent startup**, not in hermetic `Load()`:
+
+```go
+credsJSON := os.Getenv(store.CredentialsEnv)
+if credsJSON == "" {
+    return fmt.Errorf("missing env %s", store.CredentialsEnv)
+}
+```
+
+### Step 2 — Postgres Claim (core exclusivity)
+
+```sql
+BEGIN;
+SELECT id FROM tasks
+ WHERE state = 'queued'
+   AND /* capability predicates */
+ ORDER BY created_at_ms
+ FOR UPDATE SKIP LOCKED
+ LIMIT 1;
+
+UPDATE tasks SET
+   state = 'leased',
+   attempt = attempt + 1,
+   lease_id = $1,
+   lease_expiry_ms = $2,
+   updated_at_ms = $3
+ WHERE id = $4;
+COMMIT;
+```
+
+Use the same fencing compare on `Complete`/`Fail` as SQLite (`lease_id` match).
+
+### Step 3 — S3 ObjectStore
+
+```go
+func (s *S3Store) Put(ctx context.Context, key ObjectKey, body io.Reader, meta ObjectMetadata) (ObjectRef, error) {
+	// if size >= multipart_threshold → multipart upload
+	// compute sha256 while streaming
+	// on success return ObjectRef{Store: s.name, Key: ..., Size, SHA256, Codec}
+	// Put must not return until object is durable enough for immediate Get
+}
+
+func (s *S3Store) Get(ctx context.Context, ref ObjectRef) (io.ReadCloser, ObjectMetadata, error) {
+	// download; verify size + sha256; mismatch → storage_consistency
+}
+```
+
+### Step 4 — Conformance wiring
+
+```go
+func TestPostgresConformance(t *testing.T) {
+	dsn := startPostgres(t) // testcontainers
+	runStateConformance(t, func(t *testing.T) TaskStateStore {
+		return openPostgres(t, dsn)
+	})
+}
+
+func TestS3Conformance(t *testing.T) {
+	endpoint := startMinio(t)
+	runObjectConformance(t, func(t *testing.T) ObjectStore {
+		return openS3(t, endpoint)
+	})
+}
+```
+
+### Step 5 — Multi-agent no double-claim
+
+```python
+# two AgentHarness instances, cluster.enabled=false, same postgres DSN + s3
+# submit N tasks; assert each task_id claimed once across both agents' logs/status
+```
+
+### Done checklist
+
+- [ ] Full Phase 2 state conformance on Postgres  
+- [ ] Full Phase 2 object conformance on S3/MinIO  
+- [ ] Two agents, no double-claim  
+- [ ] `storage_unavailable` on pool/conn loss (retryable)  
+- [ ] Credentials never logged  
+- [ ] sqlite/filesystem tests unchanged when backends unused  
+
+### Review request
+
+```text
+Please review Phase 6.
+Commands: go test ./internal/state/ ./internal/object/ -count=1
+          pytest -m integration -- multi-agent shared backend
+Gaps: ...
+```

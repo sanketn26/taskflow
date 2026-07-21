@@ -92,3 +92,287 @@ Object RPCs stream bounded chunks and never embed values larger than the configu
 ## Exit Gate
 
 Phase 3 is complete when a raw client receives agent-relayed results end to end, crash/retry/fencing tests pass, large values use verified `ObjectRef`s, registered identity and capability-aware leasing are enforced, the portable conformance vectors are reusable without Python imports, and the worker code contains no `callback_addr`, result listener, Kafka producer, or direct RESULT sender.
+
+---
+
+## Implementation Guide
+
+> **Depends on:** Phase 2 exit green (real agent IPC, claim, complete, objects).
+> **Does not include:** `@task` / `Runtime` public SDK (Phase 4). Use registry + raw client tests.
+
+### File map
+
+```text
+python/taskwire/registry.py
+python/taskwire/serialization.py
+python/taskwire/ipc/client.py
+python/taskwire/worker/runner.py
+python/taskwire/worker/heartbeat.py
+python/taskwire/worker/__main__.py   # optional: python -m taskwire.worker
+harness/ledger.py
+python/tests/integration/test_worker_e2e.py
+python/tests/unit/test_registry.py
+python/tests/unit/test_serialization.py
+# portable vectors (JSON/msgpack fixtures shared with later Node/Go):
+testdata/portable/values.json
+```
+
+### Step 1 — Registry + serialization
+
+```python
+# python/taskwire/registry.py
+from dataclasses import dataclass
+from typing import Callable, Any
+
+@dataclass(frozen=True, slots=True)
+class TaskSpec:
+    name: str
+    version: str
+    invocation: str  # "value" | "python_args"
+    codecs: tuple[str, ...]
+    fn: Callable[..., Any]
+
+class Registry:
+    def __init__(self) -> None:
+        self._by_id: dict[tuple[str, str], TaskSpec] = {}
+
+    def register(self, spec: TaskSpec) -> None:
+        key = (spec.name, spec.version)
+        existing = self._by_id.get(key)
+        if existing is not None and existing.fn is not spec.fn:
+            raise TaskConflictError(f"duplicate {spec.name}@{spec.version}")
+        self._by_id[key] = spec
+
+    def get(self, name: str, version: str) -> TaskSpec | None:
+        return self._by_id.get((name, version))
+
+    def registration_payload(self, worker_id: str, generation: int = 1) -> dict:
+        return {
+            "worker_id": worker_id,
+            "generation": generation,
+            "tasks": [
+                {
+                    "task_name": s.name,
+                    "task_version": s.version,
+                    "invocation": s.invocation,
+                    "codecs": list(s.codecs),
+                }
+                for s in self._by_id.values()
+            ],
+        }
+```
+
+```python
+# python/taskwire/serialization.py
+import msgpack
+import hashlib
+
+def encode_portable(value: object) -> bytes:
+    """Phase 1 portable profile: reject NaN/inf/non-str keys/etc."""
+    ...
+
+def decode_portable(data: bytes) -> object:
+    ...
+
+def sha256(data: bytes) -> bytes:
+    return hashlib.sha256(data).digest()
+
+def encode_python_args(args: tuple, kwargs: dict) -> bytes:
+    # canonical {args: list, kwargs: dict} via msgpack or cloudpickle per codec
+    ...
+```
+
+### Step 2 — Multiplexed agent client
+
+```python
+# python/taskwire/ipc/client.py
+class AgentClient:
+    """One Unix connection: reader thread + serialized write; request_id futures."""
+
+    def __init__(self, socket_path: str, *, max_frame: int): ...
+
+    def connect(self) -> None: ...
+    def close(self) -> None: ...
+
+    def hello_worker(self, worker_id: str, runtime_version: str, codecs: list[str]) -> None:
+        # HELLO role=worker; wait Ack(hello)
+        ...
+
+    def register_tasks(self, payload) -> None:
+        # REGISTER_TASKS; wait Ack(register_tasks)
+        ...
+
+    def pull(self, worker_id: str, generation: int) -> LeasedTask | None:
+        # PULL → TASK or Ack(empty_pull)
+        ...
+
+    def heartbeat(self, lease_id: bytes) -> None: ...
+
+    def complete(self, task_id: bytes, lease_id: bytes, *, result=None, failure=None) -> None: ...
+
+    def object_put(self, data: bytes, codec: str) -> ObjectRef: ...
+    def object_get(self, ref: ObjectRef) -> bytes: ...
+```
+
+Writer must never interleave frames; use a lock or single writer thread + queue.
+
+### Step 3 — Heartbeat
+
+```python
+# python/taskwire/worker/heartbeat.py
+import threading
+import time
+import random
+
+class Heartbeat:
+    def __init__(self, client: AgentClient, lease_id: bytes, ttl_ms: int):
+        self._client = client
+        self._lease_id = lease_id
+        self._interval = (ttl_ms / 3.0) * (1.0 + random.uniform(-0.1, 0.1))
+        self._stop = threading.Event()
+        self.lost = False
+        self._failures = 0
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="taskwire-heartbeat", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=self._interval + 1)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                self._client.heartbeat(self._lease_id)
+                self._failures = 0
+            except Exception:
+                self._failures += 1
+                if self._failures >= 2:
+                    self.lost = True
+```
+
+Document: pure-Python heartbeat cannot interrupt GIL-holding native code.
+
+### Step 4 — Worker loop
+
+```python
+# python/taskwire/worker/runner.py
+def main(argv: list[str] | None = None) -> int:
+    # argv or env: modules to import for side-effect registration
+    # TASKWIRE_SOCKET, TASKWIRE_WORKER_ID, TASKWIRE_CONFIG
+    registry = load_registry_from_modules(modules)
+    client = AgentClient(os.environ["TASKWIRE_SOCKET"], max_frame=...)
+    client.connect()
+    client.hello_worker(...)
+    client.register_tasks(registry.registration_payload(...))
+
+    while not shutdown:
+        leased = client.pull(...)
+        if leased is None:
+            time.sleep(idle_backoff)
+            continue
+        run_one(client, registry, leased)
+
+def run_one(client, registry, leased: LeasedTask) -> None:
+    hb = Heartbeat(client, leased.lease_id, leased.ttl_ms)
+    hb.start()
+    try:
+        spec = registry.get(leased.task_name, leased.task_version)
+        if spec is None:
+            fail(client, leased, code="unknown_task", retryable=False)
+            return
+        raw = resolve_input(client, leased.input)  # ObjectRef → bytes + checksum
+        value = decode_for_invocation(spec, raw, leased)
+        try:
+            if spec.invocation == "value":
+                out = spec.fn(value)
+            else:
+                out = spec.fn(*value["args"], **value["kwargs"])
+        except BaseException as exc:
+            if is_shutdown_exception(exc):
+                raise
+            fail_from_exception(client, leased, exc)
+            return
+        ref = put_result(client, out, codec=...)
+        client.complete(leased.task_id, leased.lease_id, result=ref)
+    except StaleLeaseError:
+        return  # fenced; do not retry as new execution
+    finally:
+        hb.stop()
+```
+
+**Agent pool command example** (config):
+
+```yaml
+workers:
+  pools:
+    - name: python-default
+      runtime: python
+      command:
+        - python3
+        - -m
+        - taskwire.worker.runner
+        - myapp.tasks
+      count: 2
+      working_directory: "."
+      labels: {workload: general}
+      resources: {max_memory_mb: 2048, max_cpu_percent: 80}
+```
+
+### Step 5 — Harness hooks + ledger
+
+```python
+# AgentHarness.worker_pids() → from status snapshot worker_pids
+# harness/ledger.py — append-only per-worker execution events for conservation tests
+```
+
+### Step 6 — E2E tests
+
+```python
+# python/tests/integration/test_worker_e2e.py
+@pytest.mark.integration
+def test_registered_success(harness, tmp_path):
+    # config with one python pool importing a test tasks module
+    # raw runtime client SUBMIT examples.add v1
+    # wait_until result succeeded
+    ...
+
+@pytest.mark.chaos
+def test_worker_killed_mid_task(harness):
+    # kill worker PID mid-execution; lease expires; another worker completes
+    ...
+```
+
+### Implementation order
+
+1. Registry + serialization unit tests  
+2. AgentClient HELLO/register/object/pull/complete  
+3. Worker loop without heartbeat (memory agent OK if Phase 2 supports it)  
+4. Heartbeat + lease-loss  
+5. Manager integration + SQLite E2E + chaos  
+6. Extend `make smoke-wheel` with one registered task (or prepare for Phase 4)
+
+### Done checklist
+
+- [ ] Worker never connects to submitter; only local agent socket  
+- [ ] No PULL before REGISTER_TASKS ACK  
+- [ ] Success + task_exception + unknown_task + serialization_error  
+- [ ] Object-backed args/results checksum verified  
+- [ ] Kill mid-task → requeue → complete; late COMPLETE → stale_lease  
+- [ ] Lost COMPLETE ACK → resend same ObjectRef (no double user execution by that worker)  
+- [ ] Poison crash → dead letter without fork storm  
+- [ ] Ledger conservation holds  
+- [ ] No Kafka / callback / direct RESULT  
+
+### Review request template
+
+```text
+Please review Phase 3.
+Branch: phase-3-...
+Implemented: registry, ipc client, worker runner, heartbeat, e2e+chaos
+Commands: make unit integration smoke-wheel
+Gaps: ...
+```

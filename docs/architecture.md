@@ -52,5 +52,6 @@ Execution is at least once, not exactly once. Cancellation succeeds only while q
 10. [Phase 9 — Examples and Adoption](phases/phase-9-examples-use-cases.md)
 11. [Phase 10 — Node.js Worker and SDK](phases/phase-10-nodejs-runtime.md)
 12. [Phase 11 — Go Worker and SDK](phases/phase-11-go-runtime.md)
+13. [Phase 12 — Admin Console (Flower-class)](phases/phase-12-admin-console.md)
 
 Each phase is independently implementation-ready: it declares its own contract, required tests, implementation order, and exit gate. If this overview differs from a phase, the phase wins.

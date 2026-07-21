@@ -102,3 +102,123 @@ No `result_delivery.mode`, callback address, per-Runtime broadcast consumer grou
 ## Exit Gate
 
 Phase 7 is complete when broker outage/recovery and agent restart tests prove no committed result depends on Kafka, outbox publication is replayable and deduplicatable, forwarded results publish once at the origin, and the full Phases 1–5 suite passes with Kafka absent.
+
+---
+
+## Implementation Guide
+
+> **Kafka is a notification side-channel.** Runtime Futures still use agent RESULT
+> replay. Workers never import a Kafka client.
+
+### File map
+
+```text
+agent/internal/integrations/kafka/publisher.go
+agent/internal/integrations/kafka/producer.go   # franz-go adapter + fake for tests
+agent/internal/state/outbox.go                  # outbox ops on TaskStateStore or sibling
+python/taskwire/integrations/kafka.py           # optional consumer helper (extra)
+python/tests/integration/test_kafka_outbox.py   # marker: kafka
+```
+
+### Atomic terminal + outbox write
+
+```go
+// Inside Complete/Fail/Cancel transaction on origin:
+//  1. write terminal task state + result cursor row
+//  2. insert outbox row with event_id = new UUID, encoded event bytes FIXED
+//  3. commit
+// Only then: notify Runtime + async publish outbox
+```
+
+### Event encode (msgpack)
+
+```python
+# logical event — implement in Go for producer; Python helper decodes same shape
+event = {
+    "schema_version": 1,
+    "event_id": event_id_16,
+    "task_id": task_id_16,
+    "owner_id": owner_id_16,
+    "cursor": cursor_u64,
+    "state": "succeeded",  # | failed | cancelled
+    "result": object_ref_or_none,
+    "failure": failure_or_none,
+    "completed_at_unix_ms": int(...),
+}
+# partition key = task_id; consumers dedupe on event_id
+```
+
+### Publisher loop
+
+```go
+type Producer interface {
+	Produce(ctx context.Context, topic string, key, value []byte) (delivery <-chan error)
+	Close() error
+}
+
+func (p *Publisher) Run(ctx context.Context) {
+	for {
+		rows := claimOutboxBatch(limit) // publisher lease
+		for _, row := range rows {
+			ch := p.prod.Produce(ctx, topic, row.TaskID[:], row.Bytes)
+			select {
+			case err := <-ch:
+				if err == nil {
+					markPublished(row)
+				} else {
+					backoff(row, err)
+				}
+			case <-time.After(deliveryTimeout):
+				backoff(row, errTimeout)
+			}
+		}
+	}
+}
+```
+
+**Rules:**
+
+- Disabled config ⇒ no producer, no goroutine, no DNS  
+- Mark published only on **delivery callback**, not `Produce()` return alone  
+- Kafka down ⇒ Runtime still resolves; status shows outbox lag  
+- Forwarded completions publish **once at origin** only  
+
+### Consumer helper (optional Python extra)
+
+```python
+# pip install taskwire[kafka]
+from taskwire.integrations.kafka import ResultEventConsumer
+
+def handle(event):
+    # event.event_id, event.task_id, event.state
+    # fetch object via authorized store client if needed
+    ...
+
+# commit offsets only after handle succeeds
+```
+
+### Tests
+
+```bash
+# default suite must not need a broker
+make unit integration
+
+# kafka tier
+pytest -m kafka -v
+```
+
+### Done checklist
+
+- [ ] Terminal commit does not depend on broker  
+- [ ] Same event_id on retry/duplicate publish  
+- [ ] Delivery callback required  
+- [ ] Default install has no kafka import side effects  
+- [ ] Origin-only publish for remote completions  
+
+### Review request
+
+```text
+Please review Phase 7.
+Commands: make unit integration; pytest -m kafka
+Gaps: ...
+```

@@ -115,3 +115,326 @@ Pure Python is mandatory. Native acceleration may optimize framing/heartbeat onl
 ## Exit Gate
 
 Phase 4 is complete when a clean installed wheel completes single-node tasks through SQLite/filesystem storage, every submitted Future reaches a bounded terminal outcome during tested failures, Runtime restart replay succeeds without Kafka, cancellation durability passes, and no callback server or direct-delivery configuration remains.
+
+---
+
+## Implementation Guide
+
+> **Depends on:** Phases 2–3. This phase is the **single-node pre-alpha MVP gate**.
+> After Phase 4, a user writes ordinary `@task` functions and `Runtime.submit`.
+
+### File map
+
+```text
+python/taskwire/task.py
+python/taskwire/future.py
+python/taskwire/runtime.py
+python/taskwire/exceptions.py   # SDK exception hierarchy
+python/taskwire/registry.py     # extend Phase 3
+python/taskwire/serialization.py
+python/taskwire/__init__.py     # export task, Runtime, exceptions
+python/tests/unit/test_task.py
+python/tests/unit/test_future.py
+python/tests/integration/test_sdk_e2e.py
+```
+
+### Step 1 — Exceptions + Future
+
+```python
+# python/taskwire/exceptions.py
+class TaskwireError(Exception):
+    def __init__(self, message: str, *, code: str | None = None, retryable: bool = False):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+class ProtocolError(TaskwireError): ...
+class TaskConflictError(TaskwireError): ...
+class TaskNotFoundError(TaskwireError): ...
+class TaskExecutionError(TaskwireError): ...
+class SerializationError(TaskwireError): ...
+class AgentUnavailableError(TaskwireError): ...
+class StorageConsistencyError(TaskwireError): ...
+class RuntimeClosedError(TaskwireError): ...
+```
+
+```python
+# python/taskwire/future.py
+import threading
+from typing import Any
+
+class TaskFuture:
+    def __init__(self, task_id: bytes, owner_id: bytes):
+        self._task_id = task_id
+        self._owner_id = owner_id
+        self._cond = threading.Condition()
+        self._done = False
+        self._result: Any = None
+        self._exc: BaseException | None = None
+        self._cancelled = False
+
+    @property
+    def task_id(self) -> bytes: return self._task_id
+    @property
+    def owner_id(self) -> bytes: return self._owner_id
+
+    def _set_result(self, value: Any) -> bool:
+        with self._cond:
+            if self._done:
+                return False  # first terminal wins
+            self._result, self._done = value, True
+            self._cond.notify_all()
+            return True
+
+    def _set_exception(self, exc: BaseException) -> bool:
+        with self._cond:
+            if self._done:
+                return False
+            self._exc, self._done = exc, True
+            self._cond.notify_all()
+            return True
+
+    def result(self, timeout: float | None = None) -> Any:
+        with self._cond:
+            if not self._cond.wait_for(lambda: self._done, timeout):
+                raise TimeoutError()  # does NOT cancel task
+            if self._exc:
+                raise self._exc
+            return self._result
+
+    def done(self) -> bool:
+        with self._cond:
+            return self._done
+
+    def cancelled(self) -> bool:
+        with self._cond:
+            return self._cancelled
+```
+
+### Step 2 — `@task` decorator
+
+```python
+# python/taskwire/task.py
+from dataclasses import dataclass
+from typing import Callable, Any
+
+@dataclass(frozen=True, slots=True)
+class TaskDefinition:
+    name: str
+    version: str
+    invocation: str
+    labels: dict[str, str]
+    idempotent: bool
+    fn: Callable[..., Any]
+
+def task(
+    *,
+    name: str,
+    version: str,
+    invocation: str = "value",
+    labels: dict[str, str] | None = None,
+    idempotent: bool = False,
+):
+    if not name or not version:
+        raise ValueError("name and version are required")
+    if invocation not in ("value", "python_args"):
+        raise ValueError(invocation)
+
+    def deco(fn: Callable[..., Any]) -> TaskDefinition:
+        defn = TaskDefinition(
+            name=name,
+            version=version,
+            invocation=invocation,
+            labels=dict(labels or {}),
+            idempotent=idempotent,
+            fn=fn,
+        )
+        # optional: auto-register on module import for workers
+        return defn
+
+    return deco
+```
+
+Usage:
+
+```python
+from taskwire import task, Runtime
+
+@task(name="examples.add", version="v1", invocation="python_args", idempotent=True)
+def add(a: int, b: int) -> int:
+    return a + b
+
+with Runtime(config="taskwire.yaml") as rt:
+    fut = rt.submit(add, 20, 22)   # python_args
+    assert fut.result(timeout=10) == 42
+```
+
+For portable `value`:
+
+```python
+@task(name="examples.inc", version="v1", invocation="value")
+def inc(x):  # single value
+    return x + 1
+
+rt.submit(inc, 41)  # one positional value only
+```
+
+### Step 3 — Runtime connection lifecycle
+
+```python
+# python/taskwire/runtime.py
+class Runtime:
+    def __init__(
+        self,
+        *,
+        config: str | Path | None = None,
+        socket: str | None = None,
+        owner_id: bytes | None = None,
+    ):
+        self._owner_id = owner_id or os.urandom(16)
+        self._submitting: dict[bytes, TaskFuture] = {}
+        self._pending: dict[bytes, TaskFuture] = {}
+        self._cursor: int = 0
+        self._client: AgentClient | None = None
+        # threads: reader/dispatcher, optional reconnect
+        ...
+
+    def __enter__(self) -> Runtime:
+        self.connect()
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def connect(self) -> None:
+        # resolve socket from config or find_agent_binary + external agent
+        # HELLO runtime
+        # RESUME_RESULTS(owner, after_cursor=self._cursor, limit=batch)
+        ...
+
+    def submit(self, defn: TaskDefinition, *args, **kwargs) -> TaskFuture:
+        task_id = uuid.uuid4().bytes
+        fut = TaskFuture(task_id, self._owner_id)
+        self._submitting[task_id] = fut
+        try:
+            value_ref = self._encode_input(defn, args, kwargs)
+            self._client.submit(
+                task_id=task_id,
+                owner_id=self._owner_id,
+                name=defn.name,
+                version=defn.version,
+                invocation=defn.invocation,
+                input=value_ref,
+                labels=defn.labels,
+                idempotent=defn.idempotent,
+            )
+            # wait submit_ack_timeout_ms
+            self._pending[task_id] = self._submitting.pop(task_id)
+            return fut
+        except Exception as exc:
+            self._submitting.pop(task_id, None)
+            fut._set_exception(map_error(exc))
+            return fut
+
+    def reattach(self, task_ids: list[bytes]) -> list[TaskFuture]:
+        # TASK_QUERY batches → Futures
+        ...
+
+    def close(self, wait: bool = True, timeout: float | None = None) -> None:
+        # stop submits; optional wait pending; RuntimeClosedError rest; join threads
+        ...
+```
+
+**Dispatcher rules:**
+
+```python
+def _on_result(self, note: ResultNotification) -> None:
+    fut = self._pending.get(note.task_id)
+    # map state → set_result / set_exception
+    # only after Future terminal: ACK result (owner, task_id, cursor)
+    # advance _cursor contiguously
+```
+
+**Error mapping:** implement the table in “Error mapping” above; unit-test every Phase 1 code.
+
+### Step 4 — Object threshold
+
+```python
+def _encode_input(self, defn, args, kwargs):
+    if defn.invocation == "value":
+        if len(args) != 1 or kwargs:
+            raise TypeError("value invocation expects exactly one positional argument")
+        raw = encode_portable(args[0])
+        codec = "msgpack"
+    else:
+        raw = encode_python_args(args, kwargs)
+        codec = "msgpack"  # or cloudpickle if configured
+    if len(raw) > self._inline_threshold:
+        ref = self._client.object_put(raw, codec=codec)
+        return ValueRef(object=ref)
+    return ValueRef(inline=raw, codec=codec)
+```
+
+### Step 5 — Public exports
+
+```python
+# python/taskwire/__init__.py
+from taskwire.task import task, TaskDefinition
+from taskwire.runtime import Runtime
+from taskwire.future import TaskFuture
+from taskwire.exceptions import *
+from taskwire.agent_locate import find_agent_binary, AgentNotFoundError
+
+__all__ = [
+    "__version__",
+    "task", "TaskDefinition", "Runtime", "TaskFuture",
+    "find_agent_binary", "AgentNotFoundError",
+    # exceptions...
+]
+```
+
+### Step 6 — Tests + smoke-wheel
+
+```python
+# python/tests/integration/test_sdk_e2e.py
+def test_submit_result(harness):
+    with Runtime(socket=harness.socket_path) as rt:
+        fut = rt.submit(add, 1, 2)
+        assert fut.result(timeout=10) == 3
+
+def test_reconnect_replay(harness):
+    owner = os.urandom(16)
+    with Runtime(socket=..., owner_id=owner) as rt:
+        fut = rt.submit(...)
+        task_id = fut.task_id
+    with Runtime(socket=..., owner_id=owner) as rt:
+        fut2 = rt.reattach([task_id])[0]
+        assert fut2.result(timeout=10) == ...
+```
+
+Extend `Makefile` `smoke-wheel` to run a registered task E2E with repo not importable.
+
+### Done checklist
+
+- [ ] `@task` requires name/version; invocation value vs python_args enforced  
+- [ ] SUBMIT ACK timeout bounds; no `_pending` leak on failure  
+- [ ] Future first-terminal-wins; `result(timeout)` does not cancel  
+- [ ] Cancel returns True only when agent queued-cancel succeeds  
+- [ ] Reconnect + reattach without Kafka  
+- [ ] Large payload uses ObjectRef transparently  
+- [ ] All Phase 1 error codes mapped  
+- [ ] Clean wheel E2E on supported Python  
+- [ ] Shutdown: no thread/FD/socket leaks  
+- [ ] No TCP callback server  
+
+### Review request template
+
+```text
+Please review Phase 4 (MVP gate).
+Branch: phase-4-...
+Implemented: @task, Runtime, TaskFuture, reattach, smoke-wheel E2E
+Commands: make format lint unit integration smoke-wheel
+Gaps: ...
+```
+
+**After Phase 4 passes review, the single-node pre-alpha MVP is done.** Phases 5–7 are optional feature gates.

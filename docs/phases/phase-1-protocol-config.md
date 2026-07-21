@@ -581,3 +581,101 @@ round-trip semantically, and errors use a registered code.
 ## Exit Gate
 
 Phase 1 is complete when Python and Go interoperate through the shared Protobuf schema and configuration fixture, malformed input fails closed without large allocation, no callback or direct-result-delivery field remains, and later phases can evolve the schema using Protobuf compatibility rules.
+
+---
+
+## Implementation Guide
+
+> **Status:** Baseline is present. Use this to orient Phase 2 work and to fill
+> any holes if a test is red. Do not change frozen schemas without a deliberate
+> protocol version bump.
+
+### File map (expected)
+
+```text
+proto/taskwire/v1/control.proto
+python/taskwire/protocol/{frames,messages,errors,session}.py
+python/taskwire/protocol/pb/control_pb2.py
+python/taskwire/config.py
+agent/pkg/protocol/{frame,messages,errors,session,portable_msgpack}.go
+agent/pkg/protocol/pb/control.pb.go
+agent/internal/config/{config,yamlstrict}.go
+agent/internal/stubserver/stubserver.go   # HELLO/STATUS only until Phase 2
+taskwire.example.yaml
+testdata/config/normalized.yaml
+```
+
+### Residual verification
+
+```bash
+make unit
+cd agent && go test ./pkg/protocol/... ./internal/config/... -count=1
+python -m pytest python/tests/unit/test_protocol_*.py python/tests/unit/test_config.py -v
+python -m pytest python/tests/integration/test_protocol_compat.py -v
+```
+
+- [ ] Frame header is exactly 31 bytes; `frame_too_large` after 31 bytes only
+- [ ] Clean EOF vs truncation at every offset
+- [ ] Session: HELLO-first, role matrix, register before PULL, request-ID lifecycle
+- [ ] Portable msgpack rejects NaN/inf/non-string keys/extension types
+- [ ] Python and Go configs match `testdata/config/normalized.yaml`
+- [ ] No accepted `callback_addr` / `result_delivery` / text STATUS
+- [ ] Error code registry + retryability identical in Python and Go
+
+### Frame encode sketch (Python — already expected)
+
+```python
+HEADER_SIZE = 31
+PROTOCOL_VERSION = 1
+
+def encode_frame(frame: Frame, *, max_payload_bytes: int) -> bytes:
+    if len(frame.payload) > max_payload_bytes:
+        raise FrameTooLarge(...)
+    if len(frame.task_id) != 16:
+        raise ProtocolDecodeError("invalid_message", "task_id must be 16 bytes")
+    header = struct.pack(
+        ">BB16sQBI",
+        PROTOCOL_VERSION,
+        int(frame.message_type),
+        frame.task_id,
+        frame.request_id,
+        int(frame.flags),
+        len(frame.payload),
+    )
+    return header + frame.payload
+```
+
+### Session pure state machine (contract)
+
+```python
+# No sockets. Inputs are events; outputs are decisions Phase 2 executes.
+@dataclass(frozen=True)
+class SessionDecision:
+    allow: bool
+    error_code: str | None = None
+    # e.g. replace_primary_owner, register_request_id, complete_request_id
+
+class Session:
+    def on_hello(self, hello) -> SessionDecision: ...
+    def on_request(self, role, msg_type, request_id) -> SessionDecision: ...
+    def on_response(self, request_id) -> SessionDecision: ...
+    def reset_request_namespace(self) -> None: ...  # reconnect
+```
+
+### Regenerating Protobuf (only if schema changes)
+
+```bash
+# See proto/README.md — commit generated Go + Python bindings; never require
+# protoc at install time.
+```
+
+### Done checklist / review request
+
+```text
+Please review Phase 1.
+Commands: make unit integration; go test ./pkg/protocol/... ./internal/config/...
+Gaps: <none | list>
+```
+
+**Pass criteria:** Exit gate + residual verification green. Phase 2 may then
+replace `stubserver` with real IPC without redefining the wire.

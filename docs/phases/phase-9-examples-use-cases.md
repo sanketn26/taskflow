@@ -179,3 +179,117 @@ The comparison guide separates verified facts from benchmarks and explains when 
 ## Exit Gate
 
 Phase 9 is complete when a new user can run the default quickstart without external infrastructure, every advertised recovery/failure claim is exercised by an automated example, all configuration snippets match the shared schema, optional examples track shipped feature gates, and no example teaches a superseded callback or queue-delivery architecture.
+
+---
+
+## Implementation Guide
+
+> **Docs follow code.** Only document features whose phase exit gates passed.
+> Every example installs the **built wheel**, not a `PYTHONPATH` checkout.
+
+### Directory layout
+
+```text
+examples/quickstart/
+  README.md
+  taskwire.yaml
+  tasks.py
+  main.py
+  test_smoke.py
+examples/batch/
+examples/recovery/
+examples/cancellation/
+examples/clustering/            # only if Phase 5 shipped
+examples/distributed-storage/   # only if Phase 6 shipped
+examples/kafka-outbox/          # only if Phase 7 shipped
+docs/configuration.md
+docs/operations.md
+docs/security.md
+docs/migrations.md
+```
+
+### Quickstart files (copy-adapt)
+
+```python
+# examples/quickstart/tasks.py
+from taskwire import task
+
+@task(name="examples.add", version="v1", invocation="python_args", idempotent=True)
+def add(a: int, b: int) -> int:
+    return a + b
+```
+
+```python
+# examples/quickstart/main.py
+from taskwire import Runtime
+from tasks import add
+
+with Runtime(config="taskwire.yaml") as runtime:
+    print(runtime.submit(add, 20, 22).result(timeout=10))
+```
+
+```yaml
+# examples/quickstart/taskwire.yaml — use full Phase 1 schema;
+# pools.command must import tasks module, e.g.:
+#   command: ["python3", "-m", "taskwire.worker.runner", "tasks"]
+```
+
+````markdown
+# examples/quickstart/README.md
+## Prerequisites
+- Python 3.11+
+- Built wheel: `make wheel` from repo root
+
+## Run
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install ../../../dist/taskwire-*.whl
+taskwire-agent run --config taskwire.yaml &
+python main.py   # → 42
+```
+````
+
+### Example matrix
+
+| Example | Teaches | Automated test |
+|---------|---------|----------------|
+| quickstart | submit/result | exit 0, prints 42 |
+| batch | backpressure, ObjectRef, gather timeouts | N futures complete |
+| recovery | Runtime reattach + agent restart | result after restart |
+| cancellation | queued True / leased False | asserts return values |
+| clustering | labels, auth (no allow_insecure in prod docs) | marker `cluster` |
+| distributed-storage | shared PG/S3, no double-claim | marker `resource`/`integration` |
+| kafka-outbox | terminal events, lag, resume | marker `kafka` |
+
+### Doc scan (CI script)
+
+```bash
+# fail if retired terms appear in docs/examples
+rg -n "callback_addr|result_delivery|direct worker RESULT|Bolt|WAL persistence" docs examples && exit 1 || true
+```
+
+### Adoption wording to include
+
+**Good fits:** trusted Python services, single-node durable jobs, registered
+`name@version`, at-least-once OK, defined production work.
+
+**Poor fits:** untrusted multi-tenant code, hard real-time, exactly-once side
+effects, cancel-running as hard requirement, exploration notebooks as the
+deploy unit.
+
+### Done checklist
+
+- [ ] Quickstart runs with no Redis/Kafka/Postgres  
+- [ ] Snippets validate with Python + Go config loaders  
+- [ ] Recovery/failure claims have automated tests  
+- [ ] Optional examples gated on feature flags  
+- [ ] No retired architecture terms  
+
+### Review request
+
+```text
+Please review Phase 9.
+Walkthrough: I followed examples/quickstart README on a clean machine.
+Commands: example smokes + doc link check
+Gaps: ...
+```
