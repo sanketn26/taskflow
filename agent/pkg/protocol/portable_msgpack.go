@@ -25,7 +25,7 @@ func validatePortableValue(value interface{}) error {
 		return nil
 	case float64:
 		if math.IsNaN(v) || math.IsInf(v, 0) {
-			return NewDecodeError(InvalidMessage, "portable float must be finite")
+			return NewProtocolError(InvalidMessage, "portable float must be finite")
 		}
 		return nil
 	case []interface{}:
@@ -43,7 +43,7 @@ func validatePortableValue(value interface{}) error {
 		}
 		return nil
 	default:
-		return NewDecodeError(InvalidMessage, fmt.Sprintf("unsupported portable value type %T", value))
+		return NewProtocolError(InvalidMessage, fmt.Sprintf("unsupported portable value type %T", value))
 	}
 }
 
@@ -59,7 +59,7 @@ func EncodePortableValue(value interface{}) ([]byte, error) {
 	encoder.UseCompactInts(true)
 	encoder.UseCompactFloats(false)
 	if err := encoder.Encode(value); err != nil {
-		return nil, NewDecodeError(InvalidMessage, err.Error())
+		return nil, NewProtocolError(InvalidMessage, err.Error())
 	}
 	return output.Bytes(), nil
 }
@@ -95,20 +95,20 @@ func DecodePortableValue(payload []byte) (interface{}, error) {
 	if err != nil {
 		var semantic *portableSemanticError
 		if errors.As(err, &semantic) {
-			return nil, NewDecodeError(InvalidMessage, semantic.Error())
+			return nil, NewProtocolError(InvalidMessage, semantic.Error())
 		}
-		return nil, NewDecodeError(MalformedPayload, err.Error())
+		return nil, NewProtocolError(MalformedPayload, err.Error())
 	}
 	if reader.Len() != 0 {
 		_, trailingErr := decoder.DecodeInterface()
 		if trailingErr == nil {
-			return nil, NewDecodeError(InvalidMessage, "trailing portable value bytes")
+			return nil, NewProtocolError(InvalidMessage, "trailing portable value bytes")
 		}
 		var semantic *portableSemanticError
 		if errors.As(trailingErr, &semantic) {
-			return nil, NewDecodeError(InvalidMessage, semantic.Error())
+			return nil, NewProtocolError(InvalidMessage, semantic.Error())
 		}
-		return nil, NewDecodeError(MalformedPayload, trailingErr.Error())
+		return nil, NewProtocolError(MalformedPayload, trailingErr.Error())
 	}
 	if err := validatePortableValue(value); err != nil {
 		return nil, err

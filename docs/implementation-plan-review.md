@@ -5,7 +5,7 @@ This review is retained as a non-normative record. Its actionable corrections ha
 ## Resolved Corrections
 
 - Added a packaging/build/test Phase 0 before protocol work.
-- Defined the SUBMIT ACK as the durability boundary and bounded its wait.
+- Defined the `Submit` response as the durability boundary and bounded its wait.
 - Replaced worker-to-application callbacks with agent-relayed owner/cursor result replay.
 - Replaced Bolt/WAL-decorated queues with transactional task-state storage and immutable object storage.
 - Made exact task name/version the production identity; inline functions are development-only.

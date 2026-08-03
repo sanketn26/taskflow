@@ -28,7 +28,7 @@ harness/ledger.py
 
 ## Worker Connection
 
-The worker loads its task registry, connects only to the configured local Unix socket, sends the full Phase 1 worker `HELLO`, publishes generation 1 with `REGISTER_TASKS`, and begins `PULL` only after the registration ACK. It receives `TASK`, starts a heartbeat tied to `lease_id`, and uses agent RPCs to read/write objects. One connection multiplexes control and object-transfer requests using the Phase 1 request and transfer IDs; one reader dispatches responses and a serialized writer prevents frame interleaving. Reconnect creates a new capability namespace and republishes the complete registry before pulling.
+The worker loads its task registry, connects only to the configured local Unix socket, and opens a `Work` stream whose first message is a `WorkerRegistration` carrying identity, codecs, and generation 1 of its capability set. It begins sending `PullRequest` only after the registration response. It receives `LeasedTask`, starts a heartbeat tied to `lease_id`, and uses `PutObject`/`GetObject` to read and write objects. gRPC multiplexes those transfers alongside the `Work` stream on one connection, so no manual request or transfer correlation is needed. Reconnect opens a new stream and republishes the complete registry before pulling.
 
 All socket operations have deadlines. EOF or agent restart ends the current worker process cleanly so the manager can restart it; it does not continue executing work whose lease can no longer be renewed.
 
@@ -48,7 +48,7 @@ The agent starts the configured Python worker-pool command in the pool working d
 6. Execute the callable once for this attempt.
 7. Serialize the return value or structured failure. Serialization errors become `serialization_error`; they never crash-loop the worker.
 8. Put result bytes through the local agent/object store and receive an `ObjectRef`.
-9. Send `COMPLETE {lease_id, result|failure}` and require an ACK. Stop retrying when the agent reports `stale_lease`.
+9. Send `Completion {lease_id, result|failure}` on the `Work` stream and require its response. Stop retrying when the agent reports `stale_lease`.
 10. Stop heartbeat and pull again.
 
 Task exceptions are data. Catch `BaseException` around user invocation, but treat worker shutdown signals separately so controlled shutdown is not reported as a user failure. Preserve exception type/module, message, and a bounded traceback in `Failure`; an optional serialized exception belongs in `details` and deserialization must not be required to display the error.
@@ -63,18 +63,18 @@ Two consecutive renewal failures or an explicit stale-lease response set a lost-
 
 ## Object Transfer
 
-Object RPCs stream bounded chunks and never embed values larger than the configured inline threshold in a protocol frame. Upload supplies expected size, codec, and checksum; the agent chooses the key/store and returns the canonical reference. Workers cannot request filesystem paths directly.
+Object RPCs stream bounded chunks and never embed values larger than the configured inline threshold in a control message. Upload supplies expected size, codec, and checksum; the agent chooses the key/store and returns the canonical reference. Workers cannot request filesystem paths directly.
 
 ## Required Tests
 
 - Registered success and task exception, inline and object-backed arguments/results.
-- Capability registration is deterministic; the worker never pulls before ACK and republishes after reconnect.
+- Capability registration is deterministic; the worker never pulls before the registration response and republishes after reconnect.
 - Portable-value conformance vectors cover every shared type and boundary; Python-specific values and `cloudpickle` never advertise portable compatibility.
 - Unknown task version is terminal and not requeued.
 - Result serialization failure resolves as a structured failure.
 - Worker killed mid-task is respawned and the lease is requeued.
 - Worker SIGSTOP for two TTLs causes retry; its late completion is fenced.
-- Lost COMPLETE ACK causes idempotent retry, not re-execution by that worker.
+- A lost completion response causes idempotent retry, not re-execution by that worker.
 - Corrupt/missing input object terminates with `StorageConsistencyError` and emits an operator-visible error.
 - Poison worker crash reaches max attempts/dead letter without a restart storm.
 - Pure-Python fallback suite passes; native-heartbeat-specific GIL test is conditional.
@@ -83,7 +83,7 @@ Object RPCs stream bounded chunks and never embed values larger than the configu
 ## Implementation Order
 
 1. Registry and serialization helpers.
-2. Agent client including HELLO/capability registration, object streaming, and typed errors.
+2. Agent client including the Work stream, capability registration, object streaming, and typed errors.
 3. Worker loop without heartbeat against memory stores.
 4. Heartbeat and lease-loss handling.
 5. Worker-manager integration, including the existing harness `worker_pids()` hook, SQLite/filesystem E2E, and seeded chaos scenarios.
@@ -189,21 +189,21 @@ def encode_python_args(args: tuple, kwargs: dict) -> bytes:
 class AgentClient:
     """One Unix connection: reader thread + serialized write; request_id futures."""
 
-    def __init__(self, socket_path: str, *, max_frame: int): ...
+    def __init__(self, socket_path: str, *, max_message_bytes: int): ...
 
     def connect(self) -> None: ...
     def close(self) -> None: ...
 
-    def hello_worker(self, worker_id: str, runtime_version: str, codecs: list[str]) -> None:
-        # HELLO role=worker; wait Ack(hello)
+    def open_work(self, worker_id: str, runtime_version: str, codecs: list[str]) -> None:
+        # Work stream; first message WorkerRegistration; wait for the response
         ...
 
     def register_tasks(self, payload) -> None:
-        # REGISTER_TASKS; wait Ack(register_tasks)
+        # send WorkerMessage(register=...); wait for the registration response
         ...
 
     def pull(self, worker_id: str, generation: int) -> LeasedTask | None:
-        # PULL → TASK or Ack(empty_pull)
+        # send WorkerMessage(pull=...) → LeasedTask, or nothing when idle
         ...
 
     def heartbeat(self, lease_id: bytes) -> None: ...
@@ -214,7 +214,7 @@ class AgentClient:
     def object_get(self, ref: ObjectRef) -> bytes: ...
 ```
 
-Writer must never interleave frames; use a lock or single writer thread + queue.
+gRPC serializes stream writes; a single sender goroutine/thread still keeps ordering obvious.
 
 ### Step 3 — Heartbeat
 
@@ -264,9 +264,9 @@ def main(argv: list[str] | None = None) -> int:
     # argv or env: modules to import for side-effect registration
     # TASKWIRE_SOCKET, TASKWIRE_WORKER_ID, TASKWIRE_CONFIG
     registry = load_registry_from_modules(modules)
-    client = AgentClient(os.environ["TASKWIRE_SOCKET"], max_frame=...)
+    client = AgentClient(os.environ["TASKWIRE_SOCKET"], max_message_bytes=...)
     client.connect()
-    client.hello_worker(...)
+    client.open_work(...)
     client.register_tasks(registry.registration_payload(...))
 
     while not shutdown:
@@ -349,7 +349,7 @@ def test_worker_killed_mid_task(harness):
 ### Implementation order
 
 1. Registry + serialization unit tests  
-2. AgentClient HELLO/register/object/pull/complete  
+2. AgentClient Work stream: register/object/pull/complete  
 3. Worker loop without heartbeat (memory agent OK if Phase 2 supports it)  
 4. Heartbeat + lease-loss  
 5. Manager integration + SQLite E2E + chaos  
@@ -358,11 +358,11 @@ def test_worker_killed_mid_task(harness):
 ### Done checklist
 
 - [ ] Worker never connects to submitter; only local agent socket  
-- [ ] No PULL before REGISTER_TASKS ACK  
+- [ ] No pull before the registration response  
 - [ ] Success + task_exception + unknown_task + serialization_error  
 - [ ] Object-backed args/results checksum verified  
 - [ ] Kill mid-task → requeue → complete; late COMPLETE → stale_lease  
-- [ ] Lost COMPLETE ACK → resend same ObjectRef (no double user execution by that worker)  
+- [ ] Lost completion response → resend same ObjectRef (no double user execution by that worker)  
 - [ ] Poison crash → dead letter without fork storm  
 - [ ] Ledger conservation holds  
 - [ ] No Kafka / callback / direct RESULT  

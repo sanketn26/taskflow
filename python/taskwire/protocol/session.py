@@ -1,137 +1,83 @@
-"""Pure connection-session state machine: no sockets.
+"""Pure worker-session state machine: no sockets.
 
-Tracks per-connection registration, role authorization, in-flight request
-IDs, and owner/result-ACK correlation, and returns deterministic outputs a
-caller applies. Primary-owner connection replacement across multiple
-connections is Phase 2 integration work; this module exposes the
-transition outputs Phase 2 needs to implement it.
+Tracks the capability set a worker has registered on one ``Work`` stream and
+enforces the replacement rules. Role authorization and request correlation
+belong to gRPC, so they are no longer modelled here.
 """
 
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from taskwire.protocol.errors import (
-    DUPLICATE_REQUEST,
     NOT_REGISTERED,
     OWNER_MISMATCH,
-    ROLE_FORBIDDEN,
     TASK_CONFLICT,
-    ProtocolDecodeError,
+    ProtocolError,
 )
-from taskwire.protocol.frames import MessageType
-from taskwire.protocol.messages import TaskRegistration
+from taskwire.protocol.messages import TaskRegistration, WorkerRegistration, validate
 
-# Message types allowed for each registered role, once past HELLO.
-_RUNTIME_MESSAGES = frozenset(
-    {
-        MessageType.SUBMIT,
-        MessageType.CANCEL,
-        MessageType.RESUME_RESULTS,
-        MessageType.TASK_QUERY,
-        MessageType.ACK,  # notification ACKs
-    }
-)
-_WORKER_MESSAGES = frozenset(
-    {
-        MessageType.REGISTER_TASKS,
-        MessageType.PULL,
-        MessageType.HEARTBEAT,
-        MessageType.COMPLETE,
-    }
-)
-_ADMIN_MESSAGES = frozenset({MessageType.STATUS})
+# Roles carried in per-RPC metadata; they replace the HELLO handshake.
+ROLE_RUNTIME = "runtime"
+ROLE_WORKER = "worker"
+ROLE_ADMIN = "admin"
 
-_ROLE_MESSAGES = {
-    "runtime": _RUNTIME_MESSAGES,
-    "worker": _WORKER_MESSAGES,
-    "admin": _ADMIN_MESSAGES,
-}
+METADATA_ROLE = "taskwire-role"
+METADATA_OWNER_ID = "taskwire-owner-id"
 
 
 @dataclass
 class ConnectionState:
-    """Mutable per-connection state owned by the caller (one per socket)."""
+    """Mutable per-stream state owned by the caller (one per Work stream)."""
 
     registered: bool = False
-    role: Optional[str] = None
-    owner_id: Optional[bytes] = None
-    worker_id: Optional[str] = None
-    runtime: Optional[str] = None
+    worker_id: str | None = None
+    runtime: str | None = None
     codecs: frozenset[str] = frozenset()
     capability_generation: int = 0
-    capability_fingerprint: Optional[bytes] = None
-    in_flight_request_ids: set[int] = field(default_factory=set)
-
-    def reset_request_namespace(self) -> None:
-        """Call on reconnect: a new connection starts a fresh ID namespace."""
-        self.in_flight_request_ids = set()
+    capability_fingerprint: bytes | None = None
 
 
 class Session:
-    """Pure state machine for one connection.
+    """Pure state machine for one worker stream.
 
-    All methods take the current ``ConnectionState`` explicitly and mutate
-    it in place, returning either a value or raising ``ProtocolDecodeError``
-    with a stable error code the caller turns into an ``ERROR`` frame.
+    All methods take the current ``ConnectionState`` explicitly and mutate it
+    in place, raising ``ProtocolError`` with a stable error code the caller
+    turns into a gRPC status.
     """
 
-    def register(
-        self,
-        state: ConnectionState,
-        *,
-        role: str,
-        owner_id: Optional[bytes],
-        worker_id: Optional[str],
-        runtime: Optional[str] = None,
-        codecs: Optional[list[str]] = None,
+    def register_worker(
+        self, state: ConnectionState, registration: WorkerRegistration
     ) -> None:
+        validate(registration)
         state.registered = True
-        state.role = role
-        state.owner_id = owner_id
-        state.worker_id = worker_id
-        state.runtime = runtime
-        state.codecs = frozenset(codecs or [])
+        state.worker_id = registration.worker_id
+        state.runtime = registration.runtime
+        state.codecs = frozenset(registration.codecs)
         state.capability_generation = 0
         state.capability_fingerprint = None
-
-    def authorize(self, state: ConnectionState, message_type: MessageType) -> None:
-        if message_type == MessageType.HELLO:
-            return
-        if not state.registered:
-            raise ProtocolDecodeError(NOT_REGISTERED, "connection has not sent HELLO")
-        allowed = _ROLE_MESSAGES.get(state.role, frozenset())
-        if message_type not in allowed:
-            raise ProtocolDecodeError(
-                ROLE_FORBIDDEN, f"role {state.role!r} may not send {message_type.name}"
-            )
-        if (
-            state.role == "worker"
-            and message_type == MessageType.PULL
-            and state.capability_generation == 0
-        ):
-            raise ProtocolDecodeError(
-                NOT_REGISTERED, "worker has not registered task capabilities"
-            )
+        self.register_tasks(state, registration.tasks)
 
     def register_tasks(
         self,
         state: ConnectionState,
         registration: TaskRegistration,
     ) -> None:
-        if state.role != "worker":
-            raise ProtocolDecodeError(ROLE_FORBIDDEN, "only workers register tasks")
+        if not state.registered:
+            raise ProtocolError(NOT_REGISTERED, "worker has not registered")
+        validate(registration)
         if registration.worker_id != state.worker_id:
-            raise ProtocolDecodeError(OWNER_MISMATCH, "worker_id does not match HELLO")
+            raise ProtocolError(OWNER_MISMATCH, "worker_id does not match registration")
         for task in registration.tasks:
             if not set(task.codecs).issubset(state.codecs):
-                raise ProtocolDecodeError(TASK_CONFLICT, "task codec absent from HELLO")
+                raise ProtocolError(
+                    TASK_CONFLICT, "task codec absent from worker registration"
+                )
             if state.runtime != "python" and (
                 task.invocation == "python_args" or "cloudpickle" in task.codecs
             ):
-                raise ProtocolDecodeError(
+                raise ProtocolError(
                     TASK_CONFLICT, "runtime cannot provide Python-only capability"
                 )
         fingerprint = hashlib.sha256(
@@ -139,67 +85,35 @@ class Session:
         ).digest()
         generation = registration.generation
         if generation < state.capability_generation:
-            raise ProtocolDecodeError(TASK_CONFLICT, "stale capability generation")
+            raise ProtocolError(TASK_CONFLICT, "stale capability generation")
         if generation == state.capability_generation:
             if fingerprint == state.capability_fingerprint:
                 return
-            raise ProtocolDecodeError(
-                TASK_CONFLICT, "conflicting capability generation"
-            )
+            raise ProtocolError(TASK_CONFLICT, "conflicting capability generation")
         state.capability_generation = generation
         state.capability_fingerprint = fingerprint
 
-    def begin_request(self, state: ConnectionState, request_id: int) -> None:
-        """Register a nonzero request ID as in flight; reject reuse."""
-        if request_id == 0:
-            return
-        if request_id in state.in_flight_request_ids:
-            raise ProtocolDecodeError(
-                DUPLICATE_REQUEST, f"request id {request_id} already in flight"
-            )
-        state.in_flight_request_ids.add(request_id)
-
-    def complete_request(self, state: ConnectionState, request_id: int) -> None:
-        """Free a request ID once its response has been sent."""
-        state.in_flight_request_ids.discard(request_id)
-
-    def check_owner(self, state: ConnectionState, owner_id: bytes) -> None:
-        if state.owner_id != owner_id:
-            raise ProtocolDecodeError(
-                OWNER_MISMATCH, "owner_id does not match registered owner"
-            )
-
-
-@dataclass(frozen=True)
-class OwnerRegistration:
-    """One Runtime connection registered for an owner ID."""
-
-    owner_id: bytes
-    connection_key: object
-
 
 class OwnerRegistry:
-    """Tracks which connection is primary for each owner ID.
+    """Tracks which WatchResults stream is primary for each owner ID.
 
-    A newer connection for the same owner becomes primary once its resume
-    begins; the caller is responsible for detecting "resume begins" and
-    calling `promote`. The old connection may finish in-flight responses
-    but stops receiving new notifications once replaced.
+    A newer stream for the same owner becomes primary once it opens; the old
+    stream stops receiving new notifications.
     """
 
     def __init__(self) -> None:
         self._primary: dict[bytes, object] = {}
 
-    def promote(self, owner_id: bytes, connection_key: object) -> Optional[object]:
-        """Make connection_key primary for owner_id; returns the previous
-        primary connection key (or None if there wasn't one)."""
+    def promote(self, owner_id: bytes, stream_key: object) -> object | None:
+        """Make stream_key primary for owner_id; returns the previous primary
+        stream key (or None if there wasn't one)."""
         previous = self._primary.get(owner_id)
-        self._primary[owner_id] = connection_key
+        self._primary[owner_id] = stream_key
         return previous
 
-    def is_primary(self, owner_id: bytes, connection_key: object) -> bool:
-        return self._primary.get(owner_id) == connection_key
+    def is_primary(self, owner_id: bytes, stream_key: object) -> bool:
+        return self._primary.get(owner_id) == stream_key
 
-    def remove(self, owner_id: bytes, connection_key: object) -> None:
-        if self._primary.get(owner_id) == connection_key:
+    def remove(self, owner_id: bytes, stream_key: object) -> None:
+        if self._primary.get(owner_id) == stream_key:
             del self._primary[owner_id]

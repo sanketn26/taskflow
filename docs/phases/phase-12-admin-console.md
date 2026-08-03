@@ -143,8 +143,8 @@ Rules:
    owner-scoped like Runtime `TASK_QUERY`. Document that difference.
 4. Cluster aggregate uses **server-side** HTTP fan-in to peer
    `advertise_url` values with timeouts; partial failure is data, not 500.
-5. Socket `HELLO role=admin` remains CLI/harness only (`STATUS`); browsers
-   do not speak framed IPC.
+5. The socket `admin` role remains CLI/harness only (`Status`); browsers
+   do not speak gRPC over the agent socket.
 
 ---
 
@@ -351,7 +351,7 @@ the chosen client library defaults to it—pick one and test it).
 | `backend` | `state` \| `objects` or registered backend type names |
 | `node` | `cluster.node_name` (bounded membership set) |
 | `resource` | `memory` \| `cpu` \| `fd` |
-| `role` | IPC HELLO roles: `runtime` \| `worker` \| `admin` |
+| `role` | control-plane roles: `runtime` \| `worker` \| `admin` |
 | `route` | fixed admin route tokens (see below), not raw URL paths |
 | `action` | fixed mutation names: `cancel` \| `drain` \| `worker_restart` \| `kafka_dead_letter` |
 
@@ -383,7 +383,7 @@ allowlist above.
 | `taskwire_worker_restarts_total` | counter | `pool` | |
 | `taskwire_worker_circuit_open` | gauge | `pool` | 0/1 |
 | `taskwire_ipc_connections` | gauge | `role` | runtime\|worker\|admin |
-| `taskwire_ipc_frames_rejected_total` | counter | `code` | |
+| `taskwire_ipc_requests_rejected_total` | counter | `code` | |
 | `taskwire_object_put_bytes_total` | counter | | |
 | `taskwire_object_checksum_failures_total` | counter | | |
 | `taskwire_storage_healthy` | gauge | `backend` | state\|objects |
@@ -969,7 +969,7 @@ Phase 6 adapters):
 ```go
 // CancelAdmin cancels a queued task by ID without an owner credential.
 // It is reachable only from the local admin HTTP path (and tests), never
-// from Runtime IPC HELLO roles.
+// from control-plane roles.
 // Returns (true, nil) if this call transitioned queued → cancelled and
 // wrote the terminal result record; (false, nil) if the task exists but
 // is not cancellable (leased, forwarding, forwarded, already terminal)

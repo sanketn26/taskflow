@@ -141,7 +141,7 @@ Demonstrate successful cancellation while queued and `False`/too-late after leas
 
 ### Agent and Runtime recovery
 
-With SQLite/filesystem, submit and ACK work, terminate the Runtime before result ACK, restart with the persisted owner ID/task IDs, call `reattach`, and receive cursor-replayed results. Separately restart the agent with queued work and demonstrate recovery. Contrast the explicit memory backend, where agent restart may lose acknowledged work.
+With SQLite/filesystem, submit and confirm the response, terminate the Runtime before acknowledging the result, restart with the persisted owner ID/task IDs, call `reattach`, and receive cursor-replayed results. Separately restart the agent with queued work and demonstrate recovery. Contrast the explicit memory backend, where agent restart may lose acknowledged work.
 
 ### Capability routing and clustering
 

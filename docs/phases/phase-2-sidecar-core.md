@@ -6,13 +6,13 @@ Implement the language-neutral single-node agent around the behavioral `TaskStat
 
 ## Phase 0 Baseline
 
-Extend the existing `agent/cmd/taskwire-agent` command and `AgentHarness`; do not introduce a second daemon entry point or test-only process wrapper. Replace `agent/internal/stubserver` with the framed IPC server while preserving `taskwire-agent version`, `taskwire-agent --config PATH` during the pre-release phases, deterministic binary lookup, SIGTERM cleanup, and the harness-owned directory layout (`agent.sock`, `agent.log`, `state/`, and `objects/`). The service-style `run --config` command can be added compatibly in Phase 8.
+Extend the existing `agent/cmd/taskwire-agent` command and `AgentHarness`; do not introduce a second daemon entry point or test-only process wrapper. Replace `agent/internal/controlserver` with the production gRPC service implementation while preserving `taskwire-agent version`, `taskwire-agent --config PATH` during the pre-release phases, deterministic binary lookup, SIGTERM cleanup, and the harness-owned directory layout (`agent.sock`, `agent.log`, `state/`, and `objects/`). The service-style `run --config` command can be added compatibly in Phase 8.
 
-Phase 1 migrates `AgentHarness.status()` from its text readiness probe to framed HELLO/STATUS; `worker_pids()` remains a Phase 3 placeholder. This phase replaces the readiness adapter with the production IPC server while keeping the framed harness API, lifecycle diagnostics, and seeded `ChaosTimeline` intact. Add fault scenarios to the existing `integration`, `chaos`, and `resource` pytest markers rather than creating parallel harness conventions. Every change must continue to pass the Phase 0 version, discovery, lifecycle, and clean-wheel tests.
+Phase 1 migrates `AgentHarness.status()` to the `Status` RPC; `worker_pids()` remains a Phase 3 placeholder. This phase replaces the readiness adapter with the production service while keeping the harness API, lifecycle diagnostics, and seeded `ChaosTimeline` intact. Add fault scenarios to the existing `integration`, `chaos`, and `resource` pytest markers rather than creating parallel harness conventions. Every change must continue to pass the Phase 0 version, discovery, lifecycle, and clean-wheel tests.
 
 ## Testable Outcome
 
-A raw protocol client can submit, receive an ACK at the configured durability boundary, claim with a fenced lease, renew, complete with an immutable result reference, replay/acknowledge results by owner and cursor, cancel queued work, inspect status, and recover correctly after restart.
+A generated gRPC client can submit, receive a `SubmitResponse` at the configured durability boundary, claim with a fenced lease, renew, complete with an immutable result reference, replay/acknowledge results by owner and cursor, cancel queued work, inspect status, and recover correctly after restart.
 
 ## Storage Interfaces
 
@@ -76,8 +76,8 @@ agent/cmd/taskwire-agent/main.go
 
 - Remove a stale socket only after proving no live listener owns it.
 - Bind the Unix socket, set `0660`, and apply the configured group before accepting.
-- Each connection has one serialized writer; request handlers never interleave frame bytes.
-- Require Phase 1 `HELLO`, enforce its role/owner permissions for every request, and route direct responses by request ID.
+- gRPC owns per-stream framing and flow control; handlers never write raw bytes.
+- Enforce role/owner permissions from Phase 1 request metadata via the protocol interceptors; gRPC correlates responses.
 - Require workers to publish a valid `REGISTER_TASKS` generation before PULL; remove their capability record on disconnect and fence stale generations.
 - Permit only one primary result-notification connection per owner; replacement is atomic and never drops persisted results.
 - Decode and schema errors receive `ERROR` when possible and close only the offending connection.
@@ -86,14 +86,14 @@ agent/cmd/taskwire-agent/main.go
 
 ### Request semantics
 
-- `SUBMIT`: validate identity and envelope; store referenced/large input first; idempotently `Create` by task ID; ACK only after the selected backend durability boundary. Same ID plus same content returns the same ACK; same ID plus different content is `task_conflict`.
-- `REGISTER_TASKS`: validate the registration against HELLO runtime/codecs, atomically replace the connection's capability generation, and return the typed accepted-count ACK. Capability state is connection-scoped and is not persisted as task state.
-- `PULL`: atomically `Claim` using the connection's registered capabilities and configured pool labels; return an empty ACK when no compatible eligible task exists; otherwise return `TASK` with lease ID, TTL, and attempt.
+- `Submit`: validate identity and envelope; store referenced/large input first; idempotently `Create` by task ID; respond only after the selected backend durability boundary. Same ID plus same content returns the same response; same ID plus different content is `task_conflict`.
+- `RegisterTasks` / `Work` registration: validate against the stream's runtime/codecs, atomically replace its capability generation, and return the accepted count. Capability state is stream-scoped and is not persisted as task state.
+- `PullRequest` on `Work`: atomically `Claim` using the stream's registered capabilities and configured pool labels; send nothing when no compatible eligible task exists; otherwise send `LeasedTask` with lease ID, TTL, and attempt.
 - `HEARTBEAT`: renew only the matching active lease. Unknown/stale leases return a typed error.
 - `COMPLETE`: validate the referenced result through `ObjectStore.Stat`, then atomically record terminal state/result record under the active lease. Only after commit may the agent send `RESULT` to a connected owner.
-- `RESUME_RESULTS`: call `ListResults(owner, after, limit)` and stream ordered notifications. Never expose another owner's records.
+- `WatchResults`: call `ListResults(owner, after, limit)` and stream ordered notifications. Never expose another owner's records.
 - `TASK_QUERY`: return owner-isolated snapshots in request order; unknown and wrong-owner IDs are indistinguishable.
-- Result ACK: atomically acknowledge the matching owner/task/cursor; duplicates are idempotent.
+- `AckResult`: atomically acknowledge the matching owner/task/cursor; duplicates are idempotent.
 - `CANCEL`: conditional queued → cancelled transition. Leased, remote, terminal, or unknown tasks return `too_late`; a successful cancellation creates a terminal result record so the Future resolves.
 - `STATUS`: local-socket-only snapshot with counts by state, active leases, worker PIDs/restarts, storage health, and cluster members.
 
@@ -105,7 +105,7 @@ Poll using a monotonic scheduling loop while comparing persisted wall-clock expi
 
 ### Retention and object garbage collection
 
-A separate bounded sweeper applies `storage.objects.result_retention_seconds`. Acknowledgement permits cleanup but does not require immediate deletion; expiry permits cleanup even without ACK. Purging state and deleting objects are intentionally not one transaction: first remove/mark the state reference, then delete only when a state-store reference check proves no live task, result, transfer, or outbox row uses the object. Delete is idempotent. Failures retry with metrics/logging, and a missing referenced object is a `StorageConsistencyError`, never silently treated as an empty result.
+A separate bounded sweeper applies `storage.objects.result_retention_seconds`. Acknowledgement permits cleanup but does not require immediate deletion; expiry permits cleanup even without acknowledgement. Purging state and deleting objects are intentionally not one transaction: first remove/mark the state reference, then delete only when a state-store reference check proves no live task, result, transfer, or outbox row uses the object. Delete is idempotent. Failures retry with metrics/logging, and a missing referenced object is a `StorageConsistencyError`, never silently treated as an empty result.
 
 ### Worker manager
 
@@ -125,17 +125,17 @@ Spawn every configured worker pool using its argv directly, without a shell, and
 - Common object-store conformance: immutable put/get/stat, checksum mismatch, duplicate put, partial-write cleanup, path traversal rejection, and reopen.
 - Retention tests prove unacknowledged results replay before expiry, acknowledged/expired results become purgeable, shared objects are not deleted while referenced, and cleanup resumes after restart.
 - SQLite race tests under `go test -race`; filesystem crash/reopen tests on real temporary directories.
-- Disconnect before SUBMIT ACK never produces a false durability claim.
-- Runtime disconnect before result ACK followed by reconnect replays the record.
-- Malformed/truncated/oversized frames do not crash the agent or allocate claimed sizes.
-- Concurrent request IDs receive the matching response even when handlers finish out of order; a slow result consumer cannot stall workers or other owners.
-- HELLO role violations, duplicate request IDs, owner replacement, TASK_QUERY non-disclosure, and every owner-scoped operation are tested.
+- Disconnect before the `Submit` response never produces a false durability claim.
+- Runtime disconnect before `AckResult` followed by reconnect replays the record.
+- Malformed/oversized messages are rejected by gRPC without crashing the agent.
+- Concurrent RPCs receive matching responses even when handlers finish out of order; a slow result consumer cannot stall workers or other owners.
+- Role-metadata violations, owner replacement, `QueryTasks` non-disclosure, and every owner-scoped operation are tested.
 - Registration-before-PULL, stale/conflicting capability generations, disconnect cleanup, and concurrent Python/Node.js/Go synthetic capability sets prove incompatible tasks are never claimed and label routing occurs only after compatibility filtering.
 - Graceful shutdown rejects new work and leaves no worker or socket leaks.
 - Kill/restart with SQLite loses no acknowledged task; the explicit memory backend test demonstrates and documents that restart may lose acknowledged state.
 - At scenario end the agent is alive unless deliberately killed, has no panic, has no orphan workers/socket, and reports conservation: submitted equals terminal plus queued/leased work.
 
-Plant failpoints for state-create-before-ACK, object-put-before-state-create, terminal-commit-before-notify, result-notify-before-ACK, and lease-expiry races.
+Plant failpoints for state-create-before-response, object-put-before-state-create, terminal-commit-before-notify, result-notify-before-ack, and lease-expiry races.
 
 ## Implementation Order
 
@@ -148,19 +148,19 @@ Plant failpoints for state-create-before-ACK, object-put-before-state-create, te
 
 ## Exit Gate
 
-Phase 2 is complete when SQLite/filesystem recovery and conformance tests pass, ACK/lease/result ordering is demonstrated by failpoint tests, cancellation survives reopen, result replay works after disconnect, and no in-memory queue, Bolt store, WAL config, callback address, or direct worker-to-app result path remains.
+Phase 2 is complete when SQLite/filesystem recovery and conformance tests pass, response/lease/result ordering is demonstrated by failpoint tests, cancellation survives reopen, result replay works after disconnect, and no in-memory queue, Bolt store, WAL config, callback address, or direct worker-to-app result path remains.
 
 ---
 
 ## Implementation Guide
 
 > **Status:** **Next phase to implement.** Today `taskwire-agent` still serves only
-> framed HELLO/STATUS via `agent/internal/stubserver`. Replace that with real
-> stores + IPC without changing Phase 1 frames/config.
+> the `Status` RPC via `agent/internal/controlserver`. Replace that with real
+> stores + scheduling without changing the Phase 1 service or config.
 
 ### Success definition (one sentence)
 
-A raw protocol client can **SUBMIT → ACK → PULL/TASK → HEARTBEAT → COMPLETE → RESULT → result ACK**, and after Runtime reconnect **RESUME_RESULTS** still delivers the same cursor-ordered outcomes against **SQLite + filesystem**.
+A generated gRPC client can **Submit → response → Pull/LeasedTask → Heartbeat → Completion → WatchResults → AckResult**, and after Runtime reconnect **WatchResults** still delivers the same cursor-ordered outcomes against **SQLite + filesystem**.
 
 ### Package layout to create
 
@@ -186,11 +186,11 @@ agent/internal/lease/reaper.go
 agent/internal/worker/manager.go
 agent/internal/status/status.go
 agent/internal/faults/faults.go   # optional failpoints behind env flag
-agent/internal/ipc/server.go      # production framed server
-agent/cmd/taskwire-agent/main.go  # wire components; drop stubserver for run path
+agent/internal/ipc/server.go      # production gRPC service implementation
+agent/cmd/taskwire-agent/main.go  # wire components; swap controlserver for the run path
 
 # delete or gut when IPC is ready:
-agent/internal/stubserver/        # keep only if tests still need a minimal HELLO/STATUS fake
+agent/internal/controlserver/     # keep only if tests still need a minimal Status-only fake
 ```
 
 ### Step 1 — Domain types + memory stores (TDD)
@@ -469,7 +469,7 @@ In Phase 2 you may leave `workers.pools: []` in tests; still implement manager s
 
 ### Step 6 — IPC server (heart of Phase 2)
 
-Replace stubserver with a connection loop using Phase 1 `pkg/protocol`.
+Replace controlserver's handlers with production ones using Phase 1 `pkg/protocol`.
 
 ```go
 // agent/internal/ipc/server.go (structure)
@@ -487,63 +487,58 @@ func (s *Server) Serve(ctx context.Context) error {
 	// accept loop
 }
 
-func (s *Server) handleConn(ctx context.Context, c net.Conn) {
-	sess := protocol.NewSession()
-	// one reader goroutine, one writer goroutine + channel
-	// first message must be HELLO
-	// dispatch by MessageType
-}
+// grpc.NewServer with the protocol role interceptors; gRPC owns the
+// accept loop, per-stream framing, and response correlation.
 ```
 
-**SUBMIT handler outline:**
+**Submit handler outline:**
 
 ```go
-func (s *Server) onSubmit(conn *connState, frame *protocol.Frame, env *pb.TaskEnvelope) error {
-	// 1. role must be runtime; owner_id must match HELLO owner
+func (s *Server) Submit(ctx context.Context, env *pb.TaskEnvelope) (*pb.SubmitResponse, error) {
+	// 1. caller, _ := protocol.CallerFrom(ctx); owner_id must match caller.OwnerID
 	// 2. if input is large inline above threshold, reject or require ObjectRef
-	//    (Runtime/Phase 4 uploads first; raw clients may OBJECT_PUT first)
-	// 3. taskID := frame.TaskID (must be 16-byte nonzero)
+	//    (Runtime/Phase 4 uploads first; raw clients may PutObject first)
+	// 3. taskID := deterministic ID for this envelope (must be 16-byte nonzero)
 	// 4. record := TaskRecord{... State: queued}
 	// 5. err := s.state.Create(ctx, record)
-	//    - nil → ACK submit
-	//    - conflict → ERROR task_conflict
-	// 6. ACK only after Create returned (durability boundary)
+	//    - nil → &pb.SubmitResponse{TaskId: taskID}
+	//    - conflict → protocol.StatusError(protocol.TaskConflict, ...)
+	// 6. respond only after Create returned (durability boundary)
 }
 ```
 
-**PULL / COMPLETE:**
+**Work stream (pull / complete):**
 
 ```go
-func (s *Server) onPull(conn *connState, req *pb.PullRequest) error {
-	// require REGISTER_TASKS generation match
-	caps := conn.capabilities
-	rec, err := s.state.Claim(ctx, caps, ttl)
-	if rec == nil {
-		return writeAck(conn, reqID, &pb.Ack{Kind: &pb.Ack_EmptyPull{...}})
-	}
-	return writeTask(conn, reqID, rec) // frame task_id = rec.ID, body LeasedTask
-}
-
-func (s *Server) onComplete(conn *connState, frame *protocol.Frame, c *pb.Completion) error {
-	// Stat result object if present
-	// Complete or Fail under lease
-	// after commit: enqueue RESULT notification to primary owner connection
+func (s *Server) Work(stream pb.TaskwireControl_WorkServer) error {
+	// first message must be WorkerRegistration; then loop on Recv:
+	//
+	// pull:     require registration generation match
+	//           rec, err := s.state.Claim(ctx, caps, ttl)
+	//           rec == nil → send nothing, the stream stays open
+	//           otherwise  → stream.Send(&pb.AgentMessage{Task: LeasedTask})
+	//
+	// complete: Stat result object if present
+	//           Complete or Fail under lease
+	//           after commit: publish to the owner's WatchResults stream
+	//
+	// stream teardown → release this worker's capabilities and reap leases
 }
 ```
 
-**RESULT replay:**
+**Result replay:**
 
 ```go
-// RESUME_RESULTS → ListResults(owner, after, limit) → N RESULT frames (request_id=0)
-//   then Ack(kind=resume, next_cursor, more)
-// Result ACK → AcknowledgeResult(task, owner, cursor)
+// WatchResults(owner, after_cursor) → ListResults(owner, after, limit)
+//   → stream.Send(ResultNotification) per record, in cursor order
+// AckResult → AcknowledgeResult(task, owner, cursor)
 ```
 
-**Primary owner connection:**
+**Primary owner stream:**
 
 ```go
-// map[OwnerID]*connState
-// on HELLO(runtime): set primary; old conn stops receiving new RESULT (may finish in-flight)
+// map[OwnerID]*ownerStream via protocol.OwnerRegistry
+// on WatchResults open: Promote; the old stream stops receiving new results
 // never drop persisted results
 ```
 
@@ -563,29 +558,28 @@ func main() {
 
 ### Step 8 — Harness / integration tests
 
-Add (or extend) Python integration tests that speak the protocol without the SDK:
+Add (or extend) Python integration tests that use the generated gRPC client without the SDK:
 
 ```python
 # python/tests/integration/test_agent_core_e2e.py
 def test_submit_claim_complete_result_replay(harness):
-    # connect unix socket
-    # HELLO admin → STATUS ready
-    # HELLO runtime owner_id
-    # OBJECT_PUT small result path as needed
-    # SUBMIT TaskEnvelope
-    # HELLO worker + REGISTER_TASKS + PULL
-    # COMPLETE with ObjectRef
-    # expect RESULT, ACK result
-    # reconnect RESUME_RESULTS → empty or already-acked
+    # ControlClient.admin(socket) → Status ready
+    # ControlClient.runtime(socket, owner_id)
+    # PutObject for the result path as needed
+    # Submit(TaskEnvelope)
+    # ControlClient.worker(socket): Work stream → register, pull
+    # send Completion with ObjectRef
+    # expect a WatchResults notification, then AckResult
+    # reopen WatchResults → empty or already-acked
 ```
 
-Keep Phase 0 lifecycle tests green. `AgentHarness.status()` already uses framed STATUS; ensure production server sets `ready=true` only when stores open and listener is up.
+Keep Phase 0 lifecycle tests green. `AgentHarness.status()` already uses the `Status` RPC; ensure production server sets `ready=true` only when stores open and listener is up.
 
 ### Step 9 — Failpoints (recommended)
 
 ```go
 // agent/internal/faults/faults.go
-// TASKWIRE_FAULT=state-create-before-ack,object-put-before-create,...
+// TASKWIRE_FAULT=state-create-before-response,object-put-before-create,...
 func MaybeInject(name string) error
 ```
 
@@ -598,7 +592,7 @@ Plant in SUBMIT/COMPLETE/notify paths; chaos tests flip them with `TASKWIRE_CHAO
 3. Reaper + retention  
 4. Worker manager (empty pools OK)  
 5. IPC server message handlers  
-6. Switch `main.go` off stubserver  
+6. Switch `main.go` to the production service  
 7. Python raw-client E2E + crash/restart conservation  
 8. `make unit integration smoke-wheel`
 
@@ -614,7 +608,7 @@ make unit integration smoke-wheel
 
 - [ ] Memory + SQLite pass shared state conformance  
 - [ ] Memory + filesystem pass object conformance  
-- [ ] SUBMIT ACK only after durable Create  
+- [ ] `Submit` responds only after durable Create  
 - [ ] Claim exclusive; stale_lease on late COMPLETE  
 - [ ] RESULT only after terminal commit; cursor ordered; owner isolated  
 - [ ] Cancel queued only; leased → `too_late`  

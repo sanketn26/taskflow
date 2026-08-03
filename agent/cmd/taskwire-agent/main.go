@@ -1,7 +1,7 @@
-// Command taskwire-agent is the Go sidecar binary. Phase 0 ships a stub
-// implementation that proves the process lifecycle (start, ready socket,
-// graceful shutdown) the Python harness depends on; later phases add the
-// real protocol, worker pool, and scheduler.
+// Command taskwire-agent is the Go sidecar binary. It serves the
+// TaskwireControl gRPC service on a Unix domain socket, proving the process
+// lifecycle (start, ready socket, graceful shutdown) the Python harness
+// depends on; later phases add the worker pool, storage, and scheduler.
 package main
 
 import (
@@ -13,7 +13,7 @@ import (
 	"syscall"
 
 	"github.com/sanketn26/taskwire/agent/internal/config"
-	"github.com/sanketn26/taskwire/agent/internal/stubserver"
+	"github.com/sanketn26/taskwire/agent/internal/controlserver"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -53,7 +53,8 @@ func main() {
 		}
 	}
 
-	srv, err := stubserver.New(cfg.Socket, version)
+	maxMessageBytes := int(cfg.Queue.MaxFrameSizeMB * 1024 * 1024)
+	srv, err := controlserver.New(cfg.Socket, version, maxMessageBytes)
 	if err != nil {
 		log.Fatalf("taskwire-agent: %v", err)
 	}

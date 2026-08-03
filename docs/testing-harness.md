@@ -7,7 +7,7 @@ This file is a non-normative orientation guide. Harness construction, exact scen
 - Unit tests cover pure codecs, schemas, state machines, and helpers without processes.
 - Integration tests run built artifacts through isolated temporary state/object paths.
 - Race and conformance suites validate storage implementations and connection lifecycle.
-- Fuzzers attack frames and envelopes with a committed seed corpus.
+- Fuzzers attack control messages and semantic validation with a committed seed corpus.
 - Seeded chaos tests inject process, network, storage, and resource faults and retain a reproducible timeline.
 - Release smoke tests install the final wheel/artifacts into clean environments.
 

@@ -14,7 +14,7 @@ The zero-infrastructure defaults are SQLite and the local filesystem. Memory imp
 The ordering boundary is:
 
 ```text
-object Put → fenced terminal transaction/result record → notify Runtime → Runtime ACK
+object Put → fenced terminal transaction/result record → notify Runtime → AckResult
 ```
 
 Workers access storage through their local agent and COMPLETE with an `ObjectRef`. They never receive Runtime callback addresses. The origin agent replays results by owner ID and cursor. Kafka, when enabled, publishes committed terminal events from a transactional outbox and is not a source of truth.

@@ -21,55 +21,34 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// ControlMessage is the sole protobuf payload carried by Taskwire's thin
-// length-bounded frame. Task inputs and results remain opaque bytes identified
-// by ValueRef.codec; "msgpack" there is an application-value codec, not the
-// control-plane encoding.
-type ControlMessage struct {
+// WorkerMessage is the worker-to-agent branch of the Work stream.
+type WorkerMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Body:
 	//
-	//	*ControlMessage_Submit
-	//	*ControlMessage_ForwardedSubmit
-	//	*ControlMessage_Pull
-	//	*ControlMessage_Task
-	//	*ControlMessage_Heartbeat
-	//	*ControlMessage_Result
-	//	*ControlMessage_Cancel
-	//	*ControlMessage_Complete
-	//	*ControlMessage_ForwardedComplete
-	//	*ControlMessage_Steal
-	//	*ControlMessage_Ack
-	//	*ControlMessage_StatusRequest
-	//	*ControlMessage_StatusSnapshot
-	//	*ControlMessage_ResumeResults
-	//	*ControlMessage_Error
-	//	*ControlMessage_ObjectPut
-	//	*ControlMessage_ObjectGet
-	//	*ControlMessage_ObjectChunk
-	//	*ControlMessage_Hello
-	//	*ControlMessage_TaskQuery
-	//	*ControlMessage_TaskSnapshot
-	//	*ControlMessage_RegisterTasks
-	Body          isControlMessage_Body `protobuf_oneof:"body"`
+	//	*WorkerMessage_Register
+	//	*WorkerMessage_Pull
+	//	*WorkerMessage_Heartbeat
+	//	*WorkerMessage_Complete
+	Body          isWorkerMessage_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ControlMessage) Reset() {
-	*x = ControlMessage{}
+func (x *WorkerMessage) Reset() {
+	*x = WorkerMessage{}
 	mi := &file_taskwire_v1_control_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ControlMessage) String() string {
+func (x *WorkerMessage) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ControlMessage) ProtoMessage() {}
+func (*WorkerMessage) ProtoMessage() {}
 
-func (x *ControlMessage) ProtoReflect() protoreflect.Message {
+func (x *WorkerMessage) ProtoReflect() protoreflect.Message {
 	mi := &file_taskwire_v1_control_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -81,351 +60,342 @@ func (x *ControlMessage) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ControlMessage.ProtoReflect.Descriptor instead.
-func (*ControlMessage) Descriptor() ([]byte, []int) {
+// Deprecated: Use WorkerMessage.ProtoReflect.Descriptor instead.
+func (*WorkerMessage) Descriptor() ([]byte, []int) {
 	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ControlMessage) GetBody() isControlMessage_Body {
+func (x *WorkerMessage) GetBody() isWorkerMessage_Body {
 	if x != nil {
 		return x.Body
 	}
 	return nil
 }
 
-func (x *ControlMessage) GetSubmit() *TaskEnvelope {
+func (x *WorkerMessage) GetRegister() *WorkerRegistration {
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_Submit); ok {
-			return x.Submit
+		if x, ok := x.Body.(*WorkerMessage_Register); ok {
+			return x.Register
 		}
 	}
 	return nil
 }
 
-func (x *ControlMessage) GetForwardedSubmit() *ForwardedTask {
+func (x *WorkerMessage) GetPull() *PullRequest {
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_ForwardedSubmit); ok {
-			return x.ForwardedSubmit
-		}
-	}
-	return nil
-}
-
-func (x *ControlMessage) GetPull() *PullRequest {
-	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_Pull); ok {
+		if x, ok := x.Body.(*WorkerMessage_Pull); ok {
 			return x.Pull
 		}
 	}
 	return nil
 }
 
-func (x *ControlMessage) GetTask() *LeasedTask {
+func (x *WorkerMessage) GetHeartbeat() *HeartbeatRequest {
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_Task); ok {
-			return x.Task
-		}
-	}
-	return nil
-}
-
-func (x *ControlMessage) GetHeartbeat() *HeartbeatRequest {
-	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_Heartbeat); ok {
+		if x, ok := x.Body.(*WorkerMessage_Heartbeat); ok {
 			return x.Heartbeat
 		}
 	}
 	return nil
 }
 
-func (x *ControlMessage) GetResult() *ResultNotification {
+func (x *WorkerMessage) GetComplete() *Completion {
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_Result); ok {
-			return x.Result
-		}
-	}
-	return nil
-}
-
-func (x *ControlMessage) GetCancel() *CancelRequest {
-	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_Cancel); ok {
-			return x.Cancel
-		}
-	}
-	return nil
-}
-
-func (x *ControlMessage) GetComplete() *Completion {
-	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_Complete); ok {
+		if x, ok := x.Body.(*WorkerMessage_Complete); ok {
 			return x.Complete
 		}
 	}
 	return nil
 }
 
-func (x *ControlMessage) GetForwardedComplete() *ForwardedCompletion {
+type isWorkerMessage_Body interface {
+	isWorkerMessage_Body()
+}
+
+type WorkerMessage_Register struct {
+	Register *WorkerRegistration `protobuf:"bytes,1,opt,name=register,proto3,oneof"`
+}
+
+type WorkerMessage_Pull struct {
+	Pull *PullRequest `protobuf:"bytes,2,opt,name=pull,proto3,oneof"`
+}
+
+type WorkerMessage_Heartbeat struct {
+	Heartbeat *HeartbeatRequest `protobuf:"bytes,3,opt,name=heartbeat,proto3,oneof"`
+}
+
+type WorkerMessage_Complete struct {
+	Complete *Completion `protobuf:"bytes,4,opt,name=complete,proto3,oneof"`
+}
+
+func (*WorkerMessage_Register) isWorkerMessage_Body() {}
+
+func (*WorkerMessage_Pull) isWorkerMessage_Body() {}
+
+func (*WorkerMessage_Heartbeat) isWorkerMessage_Body() {}
+
+func (*WorkerMessage_Complete) isWorkerMessage_Body() {}
+
+// AgentMessage is the agent-to-worker branch of the Work stream.
+type AgentMessage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Body:
+	//
+	//	*AgentMessage_Task
+	//	*AgentMessage_HeartbeatAck
+	//	*AgentMessage_CompleteAck
+	//	*AgentMessage_Registered
+	Body          isAgentMessage_Body `protobuf_oneof:"body"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentMessage) Reset() {
+	*x = AgentMessage{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentMessage) ProtoMessage() {}
+
+func (x *AgentMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[1]
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_ForwardedComplete); ok {
-			return x.ForwardedComplete
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentMessage.ProtoReflect.Descriptor instead.
+func (*AgentMessage) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *AgentMessage) GetBody() isAgentMessage_Body {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+func (x *AgentMessage) GetTask() *LeasedTask {
+	if x != nil {
+		if x, ok := x.Body.(*AgentMessage_Task); ok {
+			return x.Task
 		}
 	}
 	return nil
 }
 
-func (x *ControlMessage) GetSteal() *StealRequest {
+func (x *AgentMessage) GetHeartbeatAck() *HeartbeatResponse {
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_Steal); ok {
-			return x.Steal
+		if x, ok := x.Body.(*AgentMessage_HeartbeatAck); ok {
+			return x.HeartbeatAck
 		}
 	}
 	return nil
 }
 
-func (x *ControlMessage) GetAck() *Ack {
+func (x *AgentMessage) GetCompleteAck() *CompletionResponse {
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_Ack); ok {
-			return x.Ack
+		if x, ok := x.Body.(*AgentMessage_CompleteAck); ok {
+			return x.CompleteAck
 		}
 	}
 	return nil
 }
 
-func (x *ControlMessage) GetStatusRequest() *StatusRequest {
+func (x *AgentMessage) GetRegistered() *WorkerRegistrationResponse {
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_StatusRequest); ok {
-			return x.StatusRequest
+		if x, ok := x.Body.(*AgentMessage_Registered); ok {
+			return x.Registered
 		}
 	}
 	return nil
 }
 
-func (x *ControlMessage) GetStatusSnapshot() *StatusSnapshot {
+type isAgentMessage_Body interface {
+	isAgentMessage_Body()
+}
+
+type AgentMessage_Task struct {
+	Task *LeasedTask `protobuf:"bytes,1,opt,name=task,proto3,oneof"`
+}
+
+type AgentMessage_HeartbeatAck struct {
+	HeartbeatAck *HeartbeatResponse `protobuf:"bytes,2,opt,name=heartbeat_ack,json=heartbeatAck,proto3,oneof"`
+}
+
+type AgentMessage_CompleteAck struct {
+	CompleteAck *CompletionResponse `protobuf:"bytes,3,opt,name=complete_ack,json=completeAck,proto3,oneof"`
+}
+
+type AgentMessage_Registered struct {
+	Registered *WorkerRegistrationResponse `protobuf:"bytes,4,opt,name=registered,proto3,oneof"`
+}
+
+func (*AgentMessage_Task) isAgentMessage_Body() {}
+
+func (*AgentMessage_HeartbeatAck) isAgentMessage_Body() {}
+
+func (*AgentMessage_CompleteAck) isAgentMessage_Body() {}
+
+func (*AgentMessage_Registered) isAgentMessage_Body() {}
+
+// WorkerRegistration opens a Work stream: it carries the identity fields the
+// removed worker HELLO used to establish, plus the initial capability set.
+type WorkerRegistration struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId       string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Runtime        string                 `protobuf:"bytes,2,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	RuntimeVersion string                 `protobuf:"bytes,3,opt,name=runtime_version,json=runtimeVersion,proto3" json:"runtime_version,omitempty"`
+	SdkVersion     string                 `protobuf:"bytes,4,opt,name=sdk_version,json=sdkVersion,proto3" json:"sdk_version,omitempty"`
+	Codecs         []string               `protobuf:"bytes,5,rep,name=codecs,proto3" json:"codecs,omitempty"`
+	Tasks          *TaskRegistration      `protobuf:"bytes,6,opt,name=tasks,proto3" json:"tasks,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *WorkerRegistration) Reset() {
+	*x = WorkerRegistration{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkerRegistration) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkerRegistration) ProtoMessage() {}
+
+func (x *WorkerRegistration) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[2]
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_StatusSnapshot); ok {
-			return x.StatusSnapshot
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
 		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkerRegistration.ProtoReflect.Descriptor instead.
+func (*WorkerRegistration) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *WorkerRegistration) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *WorkerRegistration) GetRuntime() string {
+	if x != nil {
+		return x.Runtime
+	}
+	return ""
+}
+
+func (x *WorkerRegistration) GetRuntimeVersion() string {
+	if x != nil {
+		return x.RuntimeVersion
+	}
+	return ""
+}
+
+func (x *WorkerRegistration) GetSdkVersion() string {
+	if x != nil {
+		return x.SdkVersion
+	}
+	return ""
+}
+
+func (x *WorkerRegistration) GetCodecs() []string {
+	if x != nil {
+		return x.Codecs
 	}
 	return nil
 }
 
-func (x *ControlMessage) GetResumeResults() *ResumeResultsRequest {
+func (x *WorkerRegistration) GetTasks() *TaskRegistration {
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_ResumeResults); ok {
-			return x.ResumeResults
-		}
+		return x.Tasks
 	}
 	return nil
 }
 
-func (x *ControlMessage) GetError() *Error {
+type WorkerRegistrationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Generation    uint64                 `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	Accepted      uint32                 `protobuf:"varint,3,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkerRegistrationResponse) Reset() {
+	*x = WorkerRegistrationResponse{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkerRegistrationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkerRegistrationResponse) ProtoMessage() {}
+
+func (x *WorkerRegistrationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[3]
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_Error); ok {
-			return x.Error
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
 		}
+		return ms
 	}
-	return nil
+	return mi.MessageOf(x)
 }
 
-func (x *ControlMessage) GetObjectPut() *ObjectPutRequest {
+// Deprecated: Use WorkerRegistrationResponse.ProtoReflect.Descriptor instead.
+func (*WorkerRegistrationResponse) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *WorkerRegistrationResponse) GetWorkerId() string {
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_ObjectPut); ok {
-			return x.ObjectPut
-		}
+		return x.WorkerId
 	}
-	return nil
+	return ""
 }
 
-func (x *ControlMessage) GetObjectGet() *ObjectGetRequest {
+func (x *WorkerRegistrationResponse) GetGeneration() uint64 {
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_ObjectGet); ok {
-			return x.ObjectGet
-		}
+		return x.Generation
 	}
-	return nil
+	return 0
 }
 
-func (x *ControlMessage) GetObjectChunk() *ObjectChunk {
+func (x *WorkerRegistrationResponse) GetAccepted() uint32 {
 	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_ObjectChunk); ok {
-			return x.ObjectChunk
-		}
+		return x.Accepted
 	}
-	return nil
+	return 0
 }
-
-func (x *ControlMessage) GetHello() *Hello {
-	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_Hello); ok {
-			return x.Hello
-		}
-	}
-	return nil
-}
-
-func (x *ControlMessage) GetTaskQuery() *TaskQuery {
-	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_TaskQuery); ok {
-			return x.TaskQuery
-		}
-	}
-	return nil
-}
-
-func (x *ControlMessage) GetTaskSnapshot() *TaskSnapshot {
-	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_TaskSnapshot); ok {
-			return x.TaskSnapshot
-		}
-	}
-	return nil
-}
-
-func (x *ControlMessage) GetRegisterTasks() *TaskRegistration {
-	if x != nil {
-		if x, ok := x.Body.(*ControlMessage_RegisterTasks); ok {
-			return x.RegisterTasks
-		}
-	}
-	return nil
-}
-
-type isControlMessage_Body interface {
-	isControlMessage_Body()
-}
-
-type ControlMessage_Submit struct {
-	Submit *TaskEnvelope `protobuf:"bytes,1,opt,name=submit,proto3,oneof"`
-}
-
-type ControlMessage_ForwardedSubmit struct {
-	ForwardedSubmit *ForwardedTask `protobuf:"bytes,2,opt,name=forwarded_submit,json=forwardedSubmit,proto3,oneof"`
-}
-
-type ControlMessage_Pull struct {
-	Pull *PullRequest `protobuf:"bytes,3,opt,name=pull,proto3,oneof"`
-}
-
-type ControlMessage_Task struct {
-	Task *LeasedTask `protobuf:"bytes,4,opt,name=task,proto3,oneof"`
-}
-
-type ControlMessage_Heartbeat struct {
-	Heartbeat *HeartbeatRequest `protobuf:"bytes,5,opt,name=heartbeat,proto3,oneof"`
-}
-
-type ControlMessage_Result struct {
-	Result *ResultNotification `protobuf:"bytes,6,opt,name=result,proto3,oneof"`
-}
-
-type ControlMessage_Cancel struct {
-	Cancel *CancelRequest `protobuf:"bytes,7,opt,name=cancel,proto3,oneof"`
-}
-
-type ControlMessage_Complete struct {
-	Complete *Completion `protobuf:"bytes,8,opt,name=complete,proto3,oneof"`
-}
-
-type ControlMessage_ForwardedComplete struct {
-	ForwardedComplete *ForwardedCompletion `protobuf:"bytes,9,opt,name=forwarded_complete,json=forwardedComplete,proto3,oneof"`
-}
-
-type ControlMessage_Steal struct {
-	Steal *StealRequest `protobuf:"bytes,10,opt,name=steal,proto3,oneof"`
-}
-
-type ControlMessage_Ack struct {
-	Ack *Ack `protobuf:"bytes,11,opt,name=ack,proto3,oneof"`
-}
-
-type ControlMessage_StatusRequest struct {
-	StatusRequest *StatusRequest `protobuf:"bytes,12,opt,name=status_request,json=statusRequest,proto3,oneof"`
-}
-
-type ControlMessage_StatusSnapshot struct {
-	StatusSnapshot *StatusSnapshot `protobuf:"bytes,13,opt,name=status_snapshot,json=statusSnapshot,proto3,oneof"`
-}
-
-type ControlMessage_ResumeResults struct {
-	ResumeResults *ResumeResultsRequest `protobuf:"bytes,14,opt,name=resume_results,json=resumeResults,proto3,oneof"`
-}
-
-type ControlMessage_Error struct {
-	Error *Error `protobuf:"bytes,15,opt,name=error,proto3,oneof"`
-}
-
-type ControlMessage_ObjectPut struct {
-	ObjectPut *ObjectPutRequest `protobuf:"bytes,16,opt,name=object_put,json=objectPut,proto3,oneof"`
-}
-
-type ControlMessage_ObjectGet struct {
-	ObjectGet *ObjectGetRequest `protobuf:"bytes,17,opt,name=object_get,json=objectGet,proto3,oneof"`
-}
-
-type ControlMessage_ObjectChunk struct {
-	ObjectChunk *ObjectChunk `protobuf:"bytes,18,opt,name=object_chunk,json=objectChunk,proto3,oneof"`
-}
-
-type ControlMessage_Hello struct {
-	Hello *Hello `protobuf:"bytes,19,opt,name=hello,proto3,oneof"`
-}
-
-type ControlMessage_TaskQuery struct {
-	TaskQuery *TaskQuery `protobuf:"bytes,20,opt,name=task_query,json=taskQuery,proto3,oneof"`
-}
-
-type ControlMessage_TaskSnapshot struct {
-	TaskSnapshot *TaskSnapshot `protobuf:"bytes,21,opt,name=task_snapshot,json=taskSnapshot,proto3,oneof"`
-}
-
-type ControlMessage_RegisterTasks struct {
-	RegisterTasks *TaskRegistration `protobuf:"bytes,22,opt,name=register_tasks,json=registerTasks,proto3,oneof"`
-}
-
-func (*ControlMessage_Submit) isControlMessage_Body() {}
-
-func (*ControlMessage_ForwardedSubmit) isControlMessage_Body() {}
-
-func (*ControlMessage_Pull) isControlMessage_Body() {}
-
-func (*ControlMessage_Task) isControlMessage_Body() {}
-
-func (*ControlMessage_Heartbeat) isControlMessage_Body() {}
-
-func (*ControlMessage_Result) isControlMessage_Body() {}
-
-func (*ControlMessage_Cancel) isControlMessage_Body() {}
-
-func (*ControlMessage_Complete) isControlMessage_Body() {}
-
-func (*ControlMessage_ForwardedComplete) isControlMessage_Body() {}
-
-func (*ControlMessage_Steal) isControlMessage_Body() {}
-
-func (*ControlMessage_Ack) isControlMessage_Body() {}
-
-func (*ControlMessage_StatusRequest) isControlMessage_Body() {}
-
-func (*ControlMessage_StatusSnapshot) isControlMessage_Body() {}
-
-func (*ControlMessage_ResumeResults) isControlMessage_Body() {}
-
-func (*ControlMessage_Error) isControlMessage_Body() {}
-
-func (*ControlMessage_ObjectPut) isControlMessage_Body() {}
-
-func (*ControlMessage_ObjectGet) isControlMessage_Body() {}
-
-func (*ControlMessage_ObjectChunk) isControlMessage_Body() {}
-
-func (*ControlMessage_Hello) isControlMessage_Body() {}
-
-func (*ControlMessage_TaskQuery) isControlMessage_Body() {}
-
-func (*ControlMessage_TaskSnapshot) isControlMessage_Body() {}
-
-func (*ControlMessage_RegisterTasks) isControlMessage_Body() {}
 
 type ObjectRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -440,7 +410,7 @@ type ObjectRef struct {
 
 func (x *ObjectRef) Reset() {
 	*x = ObjectRef{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[1]
+	mi := &file_taskwire_v1_control_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -452,7 +422,7 @@ func (x *ObjectRef) String() string {
 func (*ObjectRef) ProtoMessage() {}
 
 func (x *ObjectRef) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[1]
+	mi := &file_taskwire_v1_control_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -465,7 +435,7 @@ func (x *ObjectRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ObjectRef.ProtoReflect.Descriptor instead.
 func (*ObjectRef) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{1}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ObjectRef) GetStore() string {
@@ -517,7 +487,7 @@ type ValueRef struct {
 
 func (x *ValueRef) Reset() {
 	*x = ValueRef{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[2]
+	mi := &file_taskwire_v1_control_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -529,7 +499,7 @@ func (x *ValueRef) String() string {
 func (*ValueRef) ProtoMessage() {}
 
 func (x *ValueRef) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[2]
+	mi := &file_taskwire_v1_control_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -542,7 +512,7 @@ func (x *ValueRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValueRef.ProtoReflect.Descriptor instead.
 func (*ValueRef) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{2}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ValueRef) GetLocation() isValueRef_Location {
@@ -593,98 +563,6 @@ func (*ValueRef_Inline) isValueRef_Location() {}
 
 func (*ValueRef_Object) isValueRef_Location() {}
 
-type Hello struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Role           string                 `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
-	OwnerId        []byte                 `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	WorkerId       string                 `protobuf:"bytes,3,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	Runtime        string                 `protobuf:"bytes,4,opt,name=runtime,proto3" json:"runtime,omitempty"`
-	RuntimeVersion string                 `protobuf:"bytes,5,opt,name=runtime_version,json=runtimeVersion,proto3" json:"runtime_version,omitempty"`
-	SdkVersion     string                 `protobuf:"bytes,6,opt,name=sdk_version,json=sdkVersion,proto3" json:"sdk_version,omitempty"`
-	Codecs         []string               `protobuf:"bytes,7,rep,name=codecs,proto3" json:"codecs,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *Hello) Reset() {
-	*x = Hello{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Hello) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Hello) ProtoMessage() {}
-
-func (x *Hello) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Hello.ProtoReflect.Descriptor instead.
-func (*Hello) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *Hello) GetRole() string {
-	if x != nil {
-		return x.Role
-	}
-	return ""
-}
-
-func (x *Hello) GetOwnerId() []byte {
-	if x != nil {
-		return x.OwnerId
-	}
-	return nil
-}
-
-func (x *Hello) GetWorkerId() string {
-	if x != nil {
-		return x.WorkerId
-	}
-	return ""
-}
-
-func (x *Hello) GetRuntime() string {
-	if x != nil {
-		return x.Runtime
-	}
-	return ""
-}
-
-func (x *Hello) GetRuntimeVersion() string {
-	if x != nil {
-		return x.RuntimeVersion
-	}
-	return ""
-}
-
-func (x *Hello) GetSdkVersion() string {
-	if x != nil {
-		return x.SdkVersion
-	}
-	return ""
-}
-
-func (x *Hello) GetCodecs() []string {
-	if x != nil {
-		return x.Codecs
-	}
-	return nil
-}
-
 type PullRequest struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	WorkerId             string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
@@ -695,7 +573,7 @@ type PullRequest struct {
 
 func (x *PullRequest) Reset() {
 	*x = PullRequest{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[4]
+	mi := &file_taskwire_v1_control_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -707,7 +585,7 @@ func (x *PullRequest) String() string {
 func (*PullRequest) ProtoMessage() {}
 
 func (x *PullRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[4]
+	mi := &file_taskwire_v1_control_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -720,7 +598,7 @@ func (x *PullRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullRequest.ProtoReflect.Descriptor instead.
 func (*PullRequest) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{4}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *PullRequest) GetWorkerId() string {
@@ -749,7 +627,7 @@ type TaskCapability struct {
 
 func (x *TaskCapability) Reset() {
 	*x = TaskCapability{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[5]
+	mi := &file_taskwire_v1_control_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -761,7 +639,7 @@ func (x *TaskCapability) String() string {
 func (*TaskCapability) ProtoMessage() {}
 
 func (x *TaskCapability) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[5]
+	mi := &file_taskwire_v1_control_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -774,7 +652,7 @@ func (x *TaskCapability) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskCapability.ProtoReflect.Descriptor instead.
 func (*TaskCapability) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{5}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *TaskCapability) GetTaskName() string {
@@ -816,7 +694,7 @@ type TaskRegistration struct {
 
 func (x *TaskRegistration) Reset() {
 	*x = TaskRegistration{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[6]
+	mi := &file_taskwire_v1_control_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -828,7 +706,7 @@ func (x *TaskRegistration) String() string {
 func (*TaskRegistration) ProtoMessage() {}
 
 func (x *TaskRegistration) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[6]
+	mi := &file_taskwire_v1_control_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -841,7 +719,7 @@ func (x *TaskRegistration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskRegistration.ProtoReflect.Descriptor instead.
 func (*TaskRegistration) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{6}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *TaskRegistration) GetWorkerId() string {
@@ -865,6 +743,66 @@ func (x *TaskRegistration) GetTasks() []*TaskCapability {
 	return nil
 }
 
+type RegisterTasksResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Generation    uint64                 `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	Accepted      uint32                 `protobuf:"varint,3,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterTasksResponse) Reset() {
+	*x = RegisterTasksResponse{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterTasksResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterTasksResponse) ProtoMessage() {}
+
+func (x *RegisterTasksResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterTasksResponse.ProtoReflect.Descriptor instead.
+func (*RegisterTasksResponse) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *RegisterTasksResponse) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *RegisterTasksResponse) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *RegisterTasksResponse) GetAccepted() uint32 {
+	if x != nil {
+		return x.Accepted
+	}
+	return 0
+}
+
 type TaskQuery struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OwnerId       []byte                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
@@ -875,7 +813,7 @@ type TaskQuery struct {
 
 func (x *TaskQuery) Reset() {
 	*x = TaskQuery{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[7]
+	mi := &file_taskwire_v1_control_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -887,7 +825,7 @@ func (x *TaskQuery) String() string {
 func (*TaskQuery) ProtoMessage() {}
 
 func (x *TaskQuery) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[7]
+	mi := &file_taskwire_v1_control_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -900,7 +838,7 @@ func (x *TaskQuery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskQuery.ProtoReflect.Descriptor instead.
 func (*TaskQuery) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{7}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *TaskQuery) GetOwnerId() []byte {
@@ -933,7 +871,7 @@ type TaskSnapshotEntry struct {
 
 func (x *TaskSnapshotEntry) Reset() {
 	*x = TaskSnapshotEntry{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[8]
+	mi := &file_taskwire_v1_control_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -945,7 +883,7 @@ func (x *TaskSnapshotEntry) String() string {
 func (*TaskSnapshotEntry) ProtoMessage() {}
 
 func (x *TaskSnapshotEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[8]
+	mi := &file_taskwire_v1_control_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -958,7 +896,7 @@ func (x *TaskSnapshotEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskSnapshotEntry.ProtoReflect.Descriptor instead.
 func (*TaskSnapshotEntry) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{8}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *TaskSnapshotEntry) GetTaskId() []byte {
@@ -1032,7 +970,7 @@ type TaskSnapshot struct {
 
 func (x *TaskSnapshot) Reset() {
 	*x = TaskSnapshot{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[9]
+	mi := &file_taskwire_v1_control_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1044,7 +982,7 @@ func (x *TaskSnapshot) String() string {
 func (*TaskSnapshot) ProtoMessage() {}
 
 func (x *TaskSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[9]
+	mi := &file_taskwire_v1_control_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1057,7 +995,7 @@ func (x *TaskSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskSnapshot.ProtoReflect.Descriptor instead.
 func (*TaskSnapshot) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{9}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *TaskSnapshot) GetTasks() []*TaskSnapshotEntry {
@@ -1083,7 +1021,7 @@ type TaskEnvelope struct {
 
 func (x *TaskEnvelope) Reset() {
 	*x = TaskEnvelope{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[10]
+	mi := &file_taskwire_v1_control_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1095,7 +1033,7 @@ func (x *TaskEnvelope) String() string {
 func (*TaskEnvelope) ProtoMessage() {}
 
 func (x *TaskEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[10]
+	mi := &file_taskwire_v1_control_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1108,7 +1046,7 @@ func (x *TaskEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskEnvelope.ProtoReflect.Descriptor instead.
 func (*TaskEnvelope) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{10}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *TaskEnvelope) GetOwnerId() []byte {
@@ -1167,19 +1105,64 @@ func (x *TaskEnvelope) GetSubmittedAtUnixMs() int64 {
 	return 0
 }
 
+type SubmitResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TaskId        []byte                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitResponse) Reset() {
+	*x = SubmitResponse{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitResponse) ProtoMessage() {}
+
+func (x *SubmitResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitResponse.ProtoReflect.Descriptor instead.
+func (*SubmitResponse) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *SubmitResponse) GetTaskId() []byte {
+	if x != nil {
+		return x.TaskId
+	}
+	return nil
+}
+
 type LeasedTask struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Task          *TaskEnvelope          `protobuf:"bytes,1,opt,name=task,proto3" json:"task,omitempty"`
-	LeaseId       []byte                 `protobuf:"bytes,2,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
-	TtlMs         uint32                 `protobuf:"varint,3,opt,name=ttl_ms,json=ttlMs,proto3" json:"ttl_ms,omitempty"`
-	Attempt       uint32                 `protobuf:"varint,4,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	TaskId        []byte                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	LeaseId       []byte                 `protobuf:"bytes,3,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
+	TtlMs         uint32                 `protobuf:"varint,4,opt,name=ttl_ms,json=ttlMs,proto3" json:"ttl_ms,omitempty"`
+	Attempt       uint32                 `protobuf:"varint,5,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *LeasedTask) Reset() {
 	*x = LeasedTask{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[11]
+	mi := &file_taskwire_v1_control_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1191,7 +1174,7 @@ func (x *LeasedTask) String() string {
 func (*LeasedTask) ProtoMessage() {}
 
 func (x *LeasedTask) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[11]
+	mi := &file_taskwire_v1_control_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1204,12 +1187,19 @@ func (x *LeasedTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeasedTask.ProtoReflect.Descriptor instead.
 func (*LeasedTask) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{11}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *LeasedTask) GetTask() *TaskEnvelope {
 	if x != nil {
 		return x.Task
+	}
+	return nil
+}
+
+func (x *LeasedTask) GetTaskId() []byte {
+	if x != nil {
+		return x.TaskId
 	}
 	return nil
 }
@@ -1249,7 +1239,7 @@ type Completion struct {
 
 func (x *Completion) Reset() {
 	*x = Completion{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[12]
+	mi := &file_taskwire_v1_control_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1261,7 +1251,7 @@ func (x *Completion) String() string {
 func (*Completion) ProtoMessage() {}
 
 func (x *Completion) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[12]
+	mi := &file_taskwire_v1_control_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1274,7 +1264,7 @@ func (x *Completion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Completion.ProtoReflect.Descriptor instead.
 func (*Completion) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{12}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Completion) GetLeaseId() []byte {
@@ -1325,6 +1315,50 @@ func (*Completion_Result) isCompletion_Outcome() {}
 
 func (*Completion_Failure) isCompletion_Outcome() {}
 
+type CompletionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LeaseId       []byte                 `protobuf:"bytes,1,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompletionResponse) Reset() {
+	*x = CompletionResponse{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompletionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompletionResponse) ProtoMessage() {}
+
+func (x *CompletionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompletionResponse.ProtoReflect.Descriptor instead.
+func (*CompletionResponse) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *CompletionResponse) GetLeaseId() []byte {
+	if x != nil {
+		return x.LeaseId
+	}
+	return nil
+}
+
 type ForwardedTask struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TransferId    []byte                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
@@ -1336,7 +1370,7 @@ type ForwardedTask struct {
 
 func (x *ForwardedTask) Reset() {
 	*x = ForwardedTask{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[13]
+	mi := &file_taskwire_v1_control_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1348,7 +1382,7 @@ func (x *ForwardedTask) String() string {
 func (*ForwardedTask) ProtoMessage() {}
 
 func (x *ForwardedTask) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[13]
+	mi := &file_taskwire_v1_control_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1361,7 +1395,7 @@ func (x *ForwardedTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardedTask.ProtoReflect.Descriptor instead.
 func (*ForwardedTask) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{13}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ForwardedTask) GetTransferId() []byte {
@@ -1385,6 +1419,58 @@ func (x *ForwardedTask) GetTask() *TaskEnvelope {
 	return nil
 }
 
+type ForwardTaskResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TaskId        []byte                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	TransferId    []byte                 `protobuf:"bytes,2,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForwardTaskResponse) Reset() {
+	*x = ForwardTaskResponse{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForwardTaskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForwardTaskResponse) ProtoMessage() {}
+
+func (x *ForwardTaskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForwardTaskResponse.ProtoReflect.Descriptor instead.
+func (*ForwardTaskResponse) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ForwardTaskResponse) GetTaskId() []byte {
+	if x != nil {
+		return x.TaskId
+	}
+	return nil
+}
+
+func (x *ForwardTaskResponse) GetTransferId() []byte {
+	if x != nil {
+		return x.TransferId
+	}
+	return nil
+}
+
 type ForwardedCompletion struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TransferId    []byte                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
@@ -1401,7 +1487,7 @@ type ForwardedCompletion struct {
 
 func (x *ForwardedCompletion) Reset() {
 	*x = ForwardedCompletion{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[14]
+	mi := &file_taskwire_v1_control_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1413,7 +1499,7 @@ func (x *ForwardedCompletion) String() string {
 func (*ForwardedCompletion) ProtoMessage() {}
 
 func (x *ForwardedCompletion) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[14]
+	mi := &file_taskwire_v1_control_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1426,7 +1512,7 @@ func (x *ForwardedCompletion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardedCompletion.ProtoReflect.Descriptor instead.
 func (*ForwardedCompletion) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{14}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ForwardedCompletion) GetTransferId() []byte {
@@ -1491,6 +1577,50 @@ func (*ForwardedCompletion_Result) isForwardedCompletion_Outcome() {}
 
 func (*ForwardedCompletion_Failure) isForwardedCompletion_Outcome() {}
 
+type ForwardCompletionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TransferId    []byte                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForwardCompletionResponse) Reset() {
+	*x = ForwardCompletionResponse{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForwardCompletionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForwardCompletionResponse) ProtoMessage() {}
+
+func (x *ForwardCompletionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForwardCompletionResponse.ProtoReflect.Descriptor instead.
+func (*ForwardCompletionResponse) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ForwardCompletionResponse) GetTransferId() []byte {
+	if x != nil {
+		return x.TransferId
+	}
+	return nil
+}
+
 type Failure struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`
@@ -1503,7 +1633,7 @@ type Failure struct {
 
 func (x *Failure) Reset() {
 	*x = Failure{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[15]
+	mi := &file_taskwire_v1_control_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1515,7 +1645,7 @@ func (x *Failure) String() string {
 func (*Failure) ProtoMessage() {}
 
 func (x *Failure) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[15]
+	mi := &file_taskwire_v1_control_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1528,7 +1658,7 @@ func (x *Failure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Failure.ProtoReflect.Descriptor instead.
 func (*Failure) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{15}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *Failure) GetCode() string {
@@ -1562,8 +1692,9 @@ func (x *Failure) GetRetryable() bool {
 type ResultNotification struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	OwnerId []byte                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	Cursor  uint64                 `protobuf:"varint,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
-	State   string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`
+	TaskId  []byte                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Cursor  uint64                 `protobuf:"varint,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	State   string                 `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"`
 	// Types that are valid to be assigned to Outcome:
 	//
 	//	*ResultNotification_Result
@@ -1575,7 +1706,7 @@ type ResultNotification struct {
 
 func (x *ResultNotification) Reset() {
 	*x = ResultNotification{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[16]
+	mi := &file_taskwire_v1_control_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1587,7 +1718,7 @@ func (x *ResultNotification) String() string {
 func (*ResultNotification) ProtoMessage() {}
 
 func (x *ResultNotification) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[16]
+	mi := &file_taskwire_v1_control_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1600,12 +1731,19 @@ func (x *ResultNotification) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResultNotification.ProtoReflect.Descriptor instead.
 func (*ResultNotification) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{16}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ResultNotification) GetOwnerId() []byte {
 	if x != nil {
 		return x.OwnerId
+	}
+	return nil
+}
+
+func (x *ResultNotification) GetTaskId() []byte {
+	if x != nil {
+		return x.TaskId
 	}
 	return nil
 }
@@ -1654,16 +1792,164 @@ type isResultNotification_Outcome interface {
 }
 
 type ResultNotification_Result struct {
-	Result *ObjectRef `protobuf:"bytes,4,opt,name=result,proto3,oneof"`
+	Result *ObjectRef `protobuf:"bytes,5,opt,name=result,proto3,oneof"`
 }
 
 type ResultNotification_Failure struct {
-	Failure *Failure `protobuf:"bytes,5,opt,name=failure,proto3,oneof"`
+	Failure *Failure `protobuf:"bytes,6,opt,name=failure,proto3,oneof"`
 }
 
 func (*ResultNotification_Result) isResultNotification_Outcome() {}
 
 func (*ResultNotification_Failure) isResultNotification_Outcome() {}
+
+type WatchResultsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OwnerId       []byte                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	AfterCursor   uint64                 `protobuf:"varint,2,opt,name=after_cursor,json=afterCursor,proto3" json:"after_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchResultsRequest) Reset() {
+	*x = WatchResultsRequest{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchResultsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchResultsRequest) ProtoMessage() {}
+
+func (x *WatchResultsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchResultsRequest.ProtoReflect.Descriptor instead.
+func (*WatchResultsRequest) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *WatchResultsRequest) GetOwnerId() []byte {
+	if x != nil {
+		return x.OwnerId
+	}
+	return nil
+}
+
+func (x *WatchResultsRequest) GetAfterCursor() uint64 {
+	if x != nil {
+		return x.AfterCursor
+	}
+	return 0
+}
+
+type AckResultRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OwnerId       []byte                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	TaskId        []byte                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Cursor        uint64                 `protobuf:"varint,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AckResultRequest) Reset() {
+	*x = AckResultRequest{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AckResultRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AckResultRequest) ProtoMessage() {}
+
+func (x *AckResultRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AckResultRequest.ProtoReflect.Descriptor instead.
+func (*AckResultRequest) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *AckResultRequest) GetOwnerId() []byte {
+	if x != nil {
+		return x.OwnerId
+	}
+	return nil
+}
+
+func (x *AckResultRequest) GetTaskId() []byte {
+	if x != nil {
+		return x.TaskId
+	}
+	return nil
+}
+
+func (x *AckResultRequest) GetCursor() uint64 {
+	if x != nil {
+		return x.Cursor
+	}
+	return 0
+}
+
+type AckResultResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AckResultResponse) Reset() {
+	*x = AckResultResponse{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AckResultResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AckResultResponse) ProtoMessage() {}
+
+func (x *AckResultResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AckResultResponse.ProtoReflect.Descriptor instead.
+func (*AckResultResponse) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{26}
+}
 
 type StatusSnapshot struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
@@ -1684,7 +1970,7 @@ type StatusSnapshot struct {
 
 func (x *StatusSnapshot) Reset() {
 	*x = StatusSnapshot{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[17]
+	mi := &file_taskwire_v1_control_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1696,7 +1982,7 @@ func (x *StatusSnapshot) String() string {
 func (*StatusSnapshot) ProtoMessage() {}
 
 func (x *StatusSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[17]
+	mi := &file_taskwire_v1_control_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1709,7 +1995,7 @@ func (x *StatusSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusSnapshot.ProtoReflect.Descriptor instead.
 func (*StatusSnapshot) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{17}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *StatusSnapshot) GetVersion() string {
@@ -1789,146 +2075,8 @@ func (x *StatusSnapshot) GetLastErrorCode() string {
 	return ""
 }
 
-type Ack struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
-	TaskId        []byte                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	TransferId    []byte                 `protobuf:"bytes,3,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
-	LeaseId       []byte                 `protobuf:"bytes,4,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
-	OwnerId       []byte                 `protobuf:"bytes,5,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	Cursor        *uint64                `protobuf:"varint,6,opt,name=cursor,proto3,oneof" json:"cursor,omitempty"`
-	Cancelled     *bool                  `protobuf:"varint,7,opt,name=cancelled,proto3,oneof" json:"cancelled,omitempty"`
-	Object        *ObjectRef             `protobuf:"bytes,8,opt,name=object,proto3" json:"object,omitempty"`
-	NextCursor    *uint64                `protobuf:"varint,9,opt,name=next_cursor,json=nextCursor,proto3,oneof" json:"next_cursor,omitempty"`
-	More          *bool                  `protobuf:"varint,10,opt,name=more,proto3,oneof" json:"more,omitempty"`
-	Accepted      *uint32                `protobuf:"varint,11,opt,name=accepted,proto3,oneof" json:"accepted,omitempty"`
-	WorkerId      string                 `protobuf:"bytes,12,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	Generation    *uint64                `protobuf:"varint,13,opt,name=generation,proto3,oneof" json:"generation,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *Ack) Reset() {
-	*x = Ack{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[18]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Ack) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Ack) ProtoMessage() {}
-
-func (x *Ack) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[18]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Ack.ProtoReflect.Descriptor instead.
-func (*Ack) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{18}
-}
-
-func (x *Ack) GetKind() string {
-	if x != nil {
-		return x.Kind
-	}
-	return ""
-}
-
-func (x *Ack) GetTaskId() []byte {
-	if x != nil {
-		return x.TaskId
-	}
-	return nil
-}
-
-func (x *Ack) GetTransferId() []byte {
-	if x != nil {
-		return x.TransferId
-	}
-	return nil
-}
-
-func (x *Ack) GetLeaseId() []byte {
-	if x != nil {
-		return x.LeaseId
-	}
-	return nil
-}
-
-func (x *Ack) GetOwnerId() []byte {
-	if x != nil {
-		return x.OwnerId
-	}
-	return nil
-}
-
-func (x *Ack) GetCursor() uint64 {
-	if x != nil && x.Cursor != nil {
-		return *x.Cursor
-	}
-	return 0
-}
-
-func (x *Ack) GetCancelled() bool {
-	if x != nil && x.Cancelled != nil {
-		return *x.Cancelled
-	}
-	return false
-}
-
-func (x *Ack) GetObject() *ObjectRef {
-	if x != nil {
-		return x.Object
-	}
-	return nil
-}
-
-func (x *Ack) GetNextCursor() uint64 {
-	if x != nil && x.NextCursor != nil {
-		return *x.NextCursor
-	}
-	return 0
-}
-
-func (x *Ack) GetMore() bool {
-	if x != nil && x.More != nil {
-		return *x.More
-	}
-	return false
-}
-
-func (x *Ack) GetAccepted() uint32 {
-	if x != nil && x.Accepted != nil {
-		return *x.Accepted
-	}
-	return 0
-}
-
-func (x *Ack) GetWorkerId() string {
-	if x != nil {
-		return x.WorkerId
-	}
-	return ""
-}
-
-func (x *Ack) GetGeneration() uint64 {
-	if x != nil && x.Generation != nil {
-		return *x.Generation
-	}
-	return 0
-}
-
+// Error is carried in gRPC status details so a stable Taskwire code and
+// retryability survive alongside the transport status code.
 type Error struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`
@@ -1941,7 +2089,7 @@ type Error struct {
 
 func (x *Error) Reset() {
 	*x = Error{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[19]
+	mi := &file_taskwire_v1_control_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1953,7 +2101,7 @@ func (x *Error) String() string {
 func (*Error) ProtoMessage() {}
 
 func (x *Error) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[19]
+	mi := &file_taskwire_v1_control_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1966,7 +2114,7 @@ func (x *Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Error.ProtoReflect.Descriptor instead.
 func (*Error) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{19}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *Error) GetCode() string {
@@ -2006,7 +2154,7 @@ type HeartbeatRequest struct {
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[20]
+	mi := &file_taskwire_v1_control_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2018,7 +2166,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[20]
+	mi := &file_taskwire_v1_control_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2031,7 +2179,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{20}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *HeartbeatRequest) GetLeaseId() []byte {
@@ -2041,16 +2189,61 @@ func (x *HeartbeatRequest) GetLeaseId() []byte {
 	return nil
 }
 
+type HeartbeatResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LeaseId       []byte                 `protobuf:"bytes,1,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeartbeatResponse) Reset() {
+	*x = HeartbeatResponse{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatResponse) ProtoMessage() {}
+
+func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
+func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *HeartbeatResponse) GetLeaseId() []byte {
+	if x != nil {
+		return x.LeaseId
+	}
+	return nil
+}
+
 type CancelRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OwnerId       []byte                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	TaskId        []byte                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CancelRequest) Reset() {
 	*x = CancelRequest{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[21]
+	mi := &file_taskwire_v1_control_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2062,7 +2255,7 @@ func (x *CancelRequest) String() string {
 func (*CancelRequest) ProtoMessage() {}
 
 func (x *CancelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[21]
+	mi := &file_taskwire_v1_control_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2075,7 +2268,7 @@ func (x *CancelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelRequest.ProtoReflect.Descriptor instead.
 func (*CancelRequest) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{21}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *CancelRequest) GetOwnerId() []byte {
@@ -2085,30 +2278,36 @@ func (x *CancelRequest) GetOwnerId() []byte {
 	return nil
 }
 
-type ResumeResultsRequest struct {
+func (x *CancelRequest) GetTaskId() []byte {
+	if x != nil {
+		return x.TaskId
+	}
+	return nil
+}
+
+type CancelResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	OwnerId       []byte                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	AfterCursor   uint64                 `protobuf:"varint,2,opt,name=after_cursor,json=afterCursor,proto3" json:"after_cursor,omitempty"`
-	Limit         uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	TaskId        []byte                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Cancelled     bool                   `protobuf:"varint,2,opt,name=cancelled,proto3" json:"cancelled,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ResumeResultsRequest) Reset() {
-	*x = ResumeResultsRequest{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[22]
+func (x *CancelResponse) Reset() {
+	*x = CancelResponse{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ResumeResultsRequest) String() string {
+func (x *CancelResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ResumeResultsRequest) ProtoMessage() {}
+func (*CancelResponse) ProtoMessage() {}
 
-func (x *ResumeResultsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[22]
+func (x *CancelResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2119,111 +2318,35 @@ func (x *ResumeResultsRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ResumeResultsRequest.ProtoReflect.Descriptor instead.
-func (*ResumeResultsRequest) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{22}
+// Deprecated: Use CancelResponse.ProtoReflect.Descriptor instead.
+func (*CancelResponse) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{32}
 }
 
-func (x *ResumeResultsRequest) GetOwnerId() []byte {
+func (x *CancelResponse) GetTaskId() []byte {
 	if x != nil {
-		return x.OwnerId
+		return x.TaskId
 	}
 	return nil
 }
 
-func (x *ResumeResultsRequest) GetAfterCursor() uint64 {
+func (x *CancelResponse) GetCancelled() bool {
 	if x != nil {
-		return x.AfterCursor
+		return x.Cancelled
 	}
-	return 0
-}
-
-func (x *ResumeResultsRequest) GetLimit() uint32 {
-	if x != nil {
-		return x.Limit
-	}
-	return 0
-}
-
-type ObjectPutRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TransferId    []byte                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
-	Codec         string                 `protobuf:"bytes,2,opt,name=codec,proto3" json:"codec,omitempty"`
-	Size          uint64                 `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
-	Sha256        []byte                 `protobuf:"bytes,4,opt,name=sha256,proto3" json:"sha256,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ObjectPutRequest) Reset() {
-	*x = ObjectPutRequest{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[23]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ObjectPutRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ObjectPutRequest) ProtoMessage() {}
-
-func (x *ObjectPutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[23]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ObjectPutRequest.ProtoReflect.Descriptor instead.
-func (*ObjectPutRequest) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{23}
-}
-
-func (x *ObjectPutRequest) GetTransferId() []byte {
-	if x != nil {
-		return x.TransferId
-	}
-	return nil
-}
-
-func (x *ObjectPutRequest) GetCodec() string {
-	if x != nil {
-		return x.Codec
-	}
-	return ""
-}
-
-func (x *ObjectPutRequest) GetSize() uint64 {
-	if x != nil {
-		return x.Size
-	}
-	return 0
-}
-
-func (x *ObjectPutRequest) GetSha256() []byte {
-	if x != nil {
-		return x.Sha256
-	}
-	return nil
+	return false
 }
 
 type ObjectGetRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TransferId    []byte                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
-	Object        *ObjectRef             `protobuf:"bytes,2,opt,name=object,proto3" json:"object,omitempty"`
+	Object        *ObjectRef             `protobuf:"bytes,1,opt,name=object,proto3" json:"object,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ObjectGetRequest) Reset() {
 	*x = ObjectGetRequest{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[24]
+	mi := &file_taskwire_v1_control_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2235,7 +2358,7 @@ func (x *ObjectGetRequest) String() string {
 func (*ObjectGetRequest) ProtoMessage() {}
 
 func (x *ObjectGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[24]
+	mi := &file_taskwire_v1_control_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2248,14 +2371,7 @@ func (x *ObjectGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ObjectGetRequest.ProtoReflect.Descriptor instead.
 func (*ObjectGetRequest) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{24}
-}
-
-func (x *ObjectGetRequest) GetTransferId() []byte {
-	if x != nil {
-		return x.TransferId
-	}
-	return nil
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ObjectGetRequest) GetObject() *ObjectRef {
@@ -2265,19 +2381,67 @@ func (x *ObjectGetRequest) GetObject() *ObjectRef {
 	return nil
 }
 
+type PutObjectResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Object        *ObjectRef             `protobuf:"bytes,1,opt,name=object,proto3" json:"object,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PutObjectResponse) Reset() {
+	*x = PutObjectResponse{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutObjectResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutObjectResponse) ProtoMessage() {}
+
+func (x *PutObjectResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutObjectResponse.ProtoReflect.Descriptor instead.
+func (*PutObjectResponse) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *PutObjectResponse) GetObject() *ObjectRef {
+	if x != nil {
+		return x.Object
+	}
+	return nil
+}
+
+// ObjectChunk carries object content. The first chunk of a PutObject stream
+// sets metadata (codec, size, sha256); subsequent chunks carry data only.
+// gRPC delivers chunks in order, so an explicit sequence number is no longer
+// part of the contract.
 type ObjectChunk struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TransferId    []byte                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
-	Sequence      uint32                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
-	Eof           bool                   `protobuf:"varint,4,opt,name=eof,proto3" json:"eof,omitempty"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	Codec         string                 `protobuf:"bytes,2,opt,name=codec,proto3" json:"codec,omitempty"`
+	Size          uint64                 `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
+	Sha256        []byte                 `protobuf:"bytes,4,opt,name=sha256,proto3" json:"sha256,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ObjectChunk) Reset() {
 	*x = ObjectChunk{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[25]
+	mi := &file_taskwire_v1_control_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2289,7 +2453,7 @@ func (x *ObjectChunk) String() string {
 func (*ObjectChunk) ProtoMessage() {}
 
 func (x *ObjectChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[25]
+	mi := &file_taskwire_v1_control_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2302,21 +2466,7 @@ func (x *ObjectChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ObjectChunk.ProtoReflect.Descriptor instead.
 func (*ObjectChunk) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{25}
-}
-
-func (x *ObjectChunk) GetTransferId() []byte {
-	if x != nil {
-		return x.TransferId
-	}
-	return nil
-}
-
-func (x *ObjectChunk) GetSequence() uint32 {
-	if x != nil {
-		return x.Sequence
-	}
-	return 0
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ObjectChunk) GetData() []byte {
@@ -2326,11 +2476,25 @@ func (x *ObjectChunk) GetData() []byte {
 	return nil
 }
 
-func (x *ObjectChunk) GetEof() bool {
+func (x *ObjectChunk) GetCodec() string {
 	if x != nil {
-		return x.Eof
+		return x.Codec
 	}
-	return false
+	return ""
+}
+
+func (x *ObjectChunk) GetSize() uint64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *ObjectChunk) GetSha256() []byte {
+	if x != nil {
+		return x.Sha256
+	}
+	return nil
 }
 
 type StealRequest struct {
@@ -2344,7 +2508,7 @@ type StealRequest struct {
 
 func (x *StealRequest) Reset() {
 	*x = StealRequest{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[26]
+	mi := &file_taskwire_v1_control_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2356,7 +2520,7 @@ func (x *StealRequest) String() string {
 func (*StealRequest) ProtoMessage() {}
 
 func (x *StealRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[26]
+	mi := &file_taskwire_v1_control_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2369,7 +2533,7 @@ func (x *StealRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StealRequest.ProtoReflect.Descriptor instead.
 func (*StealRequest) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{26}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *StealRequest) GetRequesterNode() string {
@@ -2393,6 +2557,58 @@ func (x *StealRequest) GetLimit() uint32 {
 	return 0
 }
 
+type StealResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TransferId    []byte                 `protobuf:"bytes,1,opt,name=transfer_id,json=transferId,proto3" json:"transfer_id,omitempty"`
+	Accepted      uint32                 `protobuf:"varint,2,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StealResponse) Reset() {
+	*x = StealResponse{}
+	mi := &file_taskwire_v1_control_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StealResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StealResponse) ProtoMessage() {}
+
+func (x *StealResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_taskwire_v1_control_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StealResponse.ProtoReflect.Descriptor instead.
+func (*StealResponse) Descriptor() ([]byte, []int) {
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *StealResponse) GetTransferId() []byte {
+	if x != nil {
+		return x.TransferId
+	}
+	return nil
+}
+
+func (x *StealResponse) GetAccepted() uint32 {
+	if x != nil {
+		return x.Accepted
+	}
+	return 0
+}
+
 type StatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -2401,7 +2617,7 @@ type StatusRequest struct {
 
 func (x *StatusRequest) Reset() {
 	*x = StatusRequest{}
-	mi := &file_taskwire_v1_control_proto_msgTypes[27]
+	mi := &file_taskwire_v1_control_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2413,7 +2629,7 @@ func (x *StatusRequest) String() string {
 func (*StatusRequest) ProtoMessage() {}
 
 func (x *StatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_taskwire_v1_control_proto_msgTypes[27]
+	mi := &file_taskwire_v1_control_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2426,43 +2642,42 @@ func (x *StatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusRequest.ProtoReflect.Descriptor instead.
 func (*StatusRequest) Descriptor() ([]byte, []int) {
-	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{27}
+	return file_taskwire_v1_control_proto_rawDescGZIP(), []int{38}
 }
 
 var File_taskwire_v1_control_proto protoreflect.FileDescriptor
 
 const file_taskwire_v1_control_proto_rawDesc = "" +
 	"\n" +
-	"\x19taskwire/v1/control.proto\x12\vtaskwire.v1\"\xbb\n" +
+	"\x19taskwire/v1/control.proto\x12\vtaskwire.v1\"\xfc\x01\n" +
+	"\rWorkerMessage\x12=\n" +
+	"\bregister\x18\x01 \x01(\v2\x1f.taskwire.v1.WorkerRegistrationH\x00R\bregister\x12.\n" +
+	"\x04pull\x18\x02 \x01(\v2\x18.taskwire.v1.PullRequestH\x00R\x04pull\x12=\n" +
+	"\theartbeat\x18\x03 \x01(\v2\x1d.taskwire.v1.HeartbeatRequestH\x00R\theartbeat\x125\n" +
+	"\bcomplete\x18\x04 \x01(\v2\x17.taskwire.v1.CompletionH\x00R\bcompleteB\x06\n" +
+	"\x04body\"\x9d\x02\n" +
+	"\fAgentMessage\x12-\n" +
+	"\x04task\x18\x01 \x01(\v2\x17.taskwire.v1.LeasedTaskH\x00R\x04task\x12E\n" +
+	"\rheartbeat_ack\x18\x02 \x01(\v2\x1e.taskwire.v1.HeartbeatResponseH\x00R\fheartbeatAck\x12D\n" +
+	"\fcomplete_ack\x18\x03 \x01(\v2\x1f.taskwire.v1.CompletionResponseH\x00R\vcompleteAck\x12I\n" +
 	"\n" +
-	"\x0eControlMessage\x123\n" +
-	"\x06submit\x18\x01 \x01(\v2\x19.taskwire.v1.TaskEnvelopeH\x00R\x06submit\x12G\n" +
-	"\x10forwarded_submit\x18\x02 \x01(\v2\x1a.taskwire.v1.ForwardedTaskH\x00R\x0fforwardedSubmit\x12.\n" +
-	"\x04pull\x18\x03 \x01(\v2\x18.taskwire.v1.PullRequestH\x00R\x04pull\x12-\n" +
-	"\x04task\x18\x04 \x01(\v2\x17.taskwire.v1.LeasedTaskH\x00R\x04task\x12=\n" +
-	"\theartbeat\x18\x05 \x01(\v2\x1d.taskwire.v1.HeartbeatRequestH\x00R\theartbeat\x129\n" +
-	"\x06result\x18\x06 \x01(\v2\x1f.taskwire.v1.ResultNotificationH\x00R\x06result\x124\n" +
-	"\x06cancel\x18\a \x01(\v2\x1a.taskwire.v1.CancelRequestH\x00R\x06cancel\x125\n" +
-	"\bcomplete\x18\b \x01(\v2\x17.taskwire.v1.CompletionH\x00R\bcomplete\x12Q\n" +
-	"\x12forwarded_complete\x18\t \x01(\v2 .taskwire.v1.ForwardedCompletionH\x00R\x11forwardedComplete\x121\n" +
-	"\x05steal\x18\n" +
-	" \x01(\v2\x19.taskwire.v1.StealRequestH\x00R\x05steal\x12$\n" +
-	"\x03ack\x18\v \x01(\v2\x10.taskwire.v1.AckH\x00R\x03ack\x12C\n" +
-	"\x0estatus_request\x18\f \x01(\v2\x1a.taskwire.v1.StatusRequestH\x00R\rstatusRequest\x12F\n" +
-	"\x0fstatus_snapshot\x18\r \x01(\v2\x1b.taskwire.v1.StatusSnapshotH\x00R\x0estatusSnapshot\x12J\n" +
-	"\x0eresume_results\x18\x0e \x01(\v2!.taskwire.v1.ResumeResultsRequestH\x00R\rresumeResults\x12*\n" +
-	"\x05error\x18\x0f \x01(\v2\x12.taskwire.v1.ErrorH\x00R\x05error\x12>\n" +
+	"registered\x18\x04 \x01(\v2'.taskwire.v1.WorkerRegistrationResponseH\x00R\n" +
+	"registeredB\x06\n" +
+	"\x04body\"\xe2\x01\n" +
+	"\x12WorkerRegistration\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x18\n" +
+	"\aruntime\x18\x02 \x01(\tR\aruntime\x12'\n" +
+	"\x0fruntime_version\x18\x03 \x01(\tR\x0eruntimeVersion\x12\x1f\n" +
+	"\vsdk_version\x18\x04 \x01(\tR\n" +
+	"sdkVersion\x12\x16\n" +
+	"\x06codecs\x18\x05 \x03(\tR\x06codecs\x123\n" +
+	"\x05tasks\x18\x06 \x01(\v2\x1d.taskwire.v1.TaskRegistrationR\x05tasks\"u\n" +
+	"\x1aWorkerRegistrationResponse\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1e\n" +
 	"\n" +
-	"object_put\x18\x10 \x01(\v2\x1d.taskwire.v1.ObjectPutRequestH\x00R\tobjectPut\x12>\n" +
-	"\n" +
-	"object_get\x18\x11 \x01(\v2\x1d.taskwire.v1.ObjectGetRequestH\x00R\tobjectGet\x12=\n" +
-	"\fobject_chunk\x18\x12 \x01(\v2\x18.taskwire.v1.ObjectChunkH\x00R\vobjectChunk\x12*\n" +
-	"\x05hello\x18\x13 \x01(\v2\x12.taskwire.v1.HelloH\x00R\x05hello\x127\n" +
-	"\n" +
-	"task_query\x18\x14 \x01(\v2\x16.taskwire.v1.TaskQueryH\x00R\ttaskQuery\x12@\n" +
-	"\rtask_snapshot\x18\x15 \x01(\v2\x19.taskwire.v1.TaskSnapshotH\x00R\ftaskSnapshot\x12F\n" +
-	"\x0eregister_tasks\x18\x16 \x01(\v2\x1d.taskwire.v1.TaskRegistrationH\x00R\rregisterTasksB\x06\n" +
-	"\x04body\"u\n" +
+	"generation\x18\x02 \x01(\x04R\n" +
+	"generation\x12\x1a\n" +
+	"\baccepted\x18\x03 \x01(\rR\baccepted\"u\n" +
 	"\tObjectRef\x12\x14\n" +
 	"\x05store\x18\x01 \x01(\tR\x05store\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x12\n" +
@@ -2474,16 +2689,7 @@ const file_taskwire_v1_control_proto_rawDesc = "" +
 	"\x06object\x18\x02 \x01(\v2\x16.taskwire.v1.ObjectRefH\x00R\x06object\x12\x14\n" +
 	"\x05codec\x18\x03 \x01(\tR\x05codecB\n" +
 	"\n" +
-	"\blocation\"\xcf\x01\n" +
-	"\x05Hello\x12\x12\n" +
-	"\x04role\x18\x01 \x01(\tR\x04role\x12\x19\n" +
-	"\bowner_id\x18\x02 \x01(\fR\aownerId\x12\x1b\n" +
-	"\tworker_id\x18\x03 \x01(\tR\bworkerId\x12\x18\n" +
-	"\aruntime\x18\x04 \x01(\tR\aruntime\x12'\n" +
-	"\x0fruntime_version\x18\x05 \x01(\tR\x0eruntimeVersion\x12\x1f\n" +
-	"\vsdk_version\x18\x06 \x01(\tR\n" +
-	"sdkVersion\x12\x16\n" +
-	"\x06codecs\x18\a \x03(\tR\x06codecs\"_\n" +
+	"\blocation\"_\n" +
 	"\vPullRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x123\n" +
 	"\x15capability_generation\x18\x02 \x01(\x04R\x14capabilityGeneration\"\x88\x01\n" +
@@ -2499,7 +2705,13 @@ const file_taskwire_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\x02 \x01(\x04R\n" +
 	"generation\x121\n" +
-	"\x05tasks\x18\x03 \x03(\v2\x1b.taskwire.v1.TaskCapabilityR\x05tasks\"A\n" +
+	"\x05tasks\x18\x03 \x03(\v2\x1b.taskwire.v1.TaskCapabilityR\x05tasks\"p\n" +
+	"\x15RegisterTasksResponse\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\x04R\n" +
+	"generation\x12\x1a\n" +
+	"\baccepted\x18\x03 \x01(\rR\baccepted\"A\n" +
 	"\tTaskQuery\x12\x19\n" +
 	"\bowner_id\x18\x01 \x01(\fR\aownerId\x12\x19\n" +
 	"\btask_ids\x18\x02 \x03(\fR\ataskIds\"\xd9\x01\n" +
@@ -2528,25 +2740,34 @@ const file_taskwire_v1_control_proto_rawDesc = "" +
 	"\x14submitted_at_unix_ms\x18\b \x01(\x03R\x11submittedAtUnixMs\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x87\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\")\n" +
+	"\x0eSubmitResponse\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\fR\x06taskId\"\xa0\x01\n" +
 	"\n" +
 	"LeasedTask\x12-\n" +
-	"\x04task\x18\x01 \x01(\v2\x19.taskwire.v1.TaskEnvelopeR\x04task\x12\x19\n" +
-	"\blease_id\x18\x02 \x01(\fR\aleaseId\x12\x15\n" +
-	"\x06ttl_ms\x18\x03 \x01(\rR\x05ttlMs\x12\x18\n" +
-	"\aattempt\x18\x04 \x01(\rR\aattempt\"\x96\x01\n" +
+	"\x04task\x18\x01 \x01(\v2\x19.taskwire.v1.TaskEnvelopeR\x04task\x12\x17\n" +
+	"\atask_id\x18\x02 \x01(\fR\x06taskId\x12\x19\n" +
+	"\blease_id\x18\x03 \x01(\fR\aleaseId\x12\x15\n" +
+	"\x06ttl_ms\x18\x04 \x01(\rR\x05ttlMs\x12\x18\n" +
+	"\aattempt\x18\x05 \x01(\rR\aattempt\"\x96\x01\n" +
 	"\n" +
 	"Completion\x12\x19\n" +
 	"\blease_id\x18\x01 \x01(\fR\aleaseId\x120\n" +
 	"\x06result\x18\x02 \x01(\v2\x16.taskwire.v1.ObjectRefH\x00R\x06result\x120\n" +
 	"\afailure\x18\x03 \x01(\v2\x14.taskwire.v1.FailureH\x00R\afailureB\t\n" +
-	"\aoutcome\"\x80\x01\n" +
+	"\aoutcome\"/\n" +
+	"\x12CompletionResponse\x12\x19\n" +
+	"\blease_id\x18\x01 \x01(\fR\aleaseId\"\x80\x01\n" +
 	"\rForwardedTask\x12\x1f\n" +
 	"\vtransfer_id\x18\x01 \x01(\fR\n" +
 	"transferId\x12\x1f\n" +
 	"\vorigin_node\x18\x02 \x01(\tR\n" +
 	"originNode\x12-\n" +
-	"\x04task\x18\x03 \x01(\v2\x19.taskwire.v1.TaskEnvelopeR\x04task\"\xed\x01\n" +
+	"\x04task\x18\x03 \x01(\v2\x19.taskwire.v1.TaskEnvelopeR\x04task\"O\n" +
+	"\x13ForwardTaskResponse\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\fR\x06taskId\x12\x1f\n" +
+	"\vtransfer_id\x18\x02 \x01(\fR\n" +
+	"transferId\"\xed\x01\n" +
 	"\x13ForwardedCompletion\x12\x1f\n" +
 	"\vtransfer_id\x18\x01 \x01(\fR\n" +
 	"transferId\x12\x1f\n" +
@@ -2555,19 +2776,31 @@ const file_taskwire_v1_control_proto_rawDesc = "" +
 	"\x0eremote_attempt\x18\x03 \x01(\rR\rremoteAttempt\x120\n" +
 	"\x06result\x18\x04 \x01(\v2\x16.taskwire.v1.ObjectRefH\x00R\x06result\x120\n" +
 	"\afailure\x18\x05 \x01(\v2\x14.taskwire.v1.FailureH\x00R\afailureB\t\n" +
-	"\aoutcome\"\x86\x01\n" +
+	"\aoutcome\"<\n" +
+	"\x19ForwardCompletionResponse\x12\x1f\n" +
+	"\vtransfer_id\x18\x01 \x01(\fR\n" +
+	"transferId\"\x86\x01\n" +
 	"\aFailure\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12/\n" +
 	"\adetails\x18\x03 \x01(\v2\x15.taskwire.v1.ValueRefR\adetails\x12\x1c\n" +
-	"\tretryable\x18\x04 \x01(\bR\tretryable\"\xcc\x01\n" +
+	"\tretryable\x18\x04 \x01(\bR\tretryable\"\xe5\x01\n" +
 	"\x12ResultNotification\x12\x19\n" +
-	"\bowner_id\x18\x01 \x01(\fR\aownerId\x12\x16\n" +
-	"\x06cursor\x18\x02 \x01(\x04R\x06cursor\x12\x14\n" +
-	"\x05state\x18\x03 \x01(\tR\x05state\x120\n" +
-	"\x06result\x18\x04 \x01(\v2\x16.taskwire.v1.ObjectRefH\x00R\x06result\x120\n" +
-	"\afailure\x18\x05 \x01(\v2\x14.taskwire.v1.FailureH\x00R\afailureB\t\n" +
-	"\aoutcome\"\x93\x04\n" +
+	"\bowner_id\x18\x01 \x01(\fR\aownerId\x12\x17\n" +
+	"\atask_id\x18\x02 \x01(\fR\x06taskId\x12\x16\n" +
+	"\x06cursor\x18\x03 \x01(\x04R\x06cursor\x12\x14\n" +
+	"\x05state\x18\x04 \x01(\tR\x05state\x120\n" +
+	"\x06result\x18\x05 \x01(\v2\x16.taskwire.v1.ObjectRefH\x00R\x06result\x120\n" +
+	"\afailure\x18\x06 \x01(\v2\x14.taskwire.v1.FailureH\x00R\afailureB\t\n" +
+	"\aoutcome\"S\n" +
+	"\x13WatchResultsRequest\x12\x19\n" +
+	"\bowner_id\x18\x01 \x01(\fR\aownerId\x12!\n" +
+	"\fafter_cursor\x18\x02 \x01(\x04R\vafterCursor\"^\n" +
+	"\x10AckResultRequest\x12\x19\n" +
+	"\bowner_id\x18\x01 \x01(\fR\aownerId\x12\x17\n" +
+	"\atask_id\x18\x02 \x01(\fR\x06taskId\x12\x16\n" +
+	"\x06cursor\x18\x03 \x01(\x04R\x06cursor\"\x13\n" +
+	"\x11AckResultResponse\"\x93\x04\n" +
 	"\x0eStatusSnapshot\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x10\n" +
 	"\x03pid\x18\x02 \x01(\x04R\x03pid\x12\x14\n" +
@@ -2586,33 +2819,7 @@ const file_taskwire_v1_control_proto_rawDesc = "" +
 	"\x0fTaskCountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01B\x12\n" +
-	"\x10_last_error_code\"\xe9\x03\n" +
-	"\x03Ack\x12\x12\n" +
-	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x17\n" +
-	"\atask_id\x18\x02 \x01(\fR\x06taskId\x12\x1f\n" +
-	"\vtransfer_id\x18\x03 \x01(\fR\n" +
-	"transferId\x12\x19\n" +
-	"\blease_id\x18\x04 \x01(\fR\aleaseId\x12\x19\n" +
-	"\bowner_id\x18\x05 \x01(\fR\aownerId\x12\x1b\n" +
-	"\x06cursor\x18\x06 \x01(\x04H\x00R\x06cursor\x88\x01\x01\x12!\n" +
-	"\tcancelled\x18\a \x01(\bH\x01R\tcancelled\x88\x01\x01\x12.\n" +
-	"\x06object\x18\b \x01(\v2\x16.taskwire.v1.ObjectRefR\x06object\x12$\n" +
-	"\vnext_cursor\x18\t \x01(\x04H\x02R\n" +
-	"nextCursor\x88\x01\x01\x12\x17\n" +
-	"\x04more\x18\n" +
-	" \x01(\bH\x03R\x04more\x88\x01\x01\x12\x1f\n" +
-	"\baccepted\x18\v \x01(\rH\x04R\baccepted\x88\x01\x01\x12\x1b\n" +
-	"\tworker_id\x18\f \x01(\tR\bworkerId\x12#\n" +
-	"\n" +
-	"generation\x18\r \x01(\x04H\x05R\n" +
-	"generation\x88\x01\x01B\t\n" +
-	"\a_cursorB\f\n" +
-	"\n" +
-	"_cancelledB\x0e\n" +
-	"\f_next_cursorB\a\n" +
-	"\x05_moreB\v\n" +
-	"\t_acceptedB\r\n" +
-	"\v_generation\"\xca\x01\n" +
+	"\x10_last_error_code\"\xca\x01\n" +
 	"\x05Error\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1c\n" +
@@ -2622,37 +2829,51 @@ const file_taskwire_v1_control_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"-\n" +
 	"\x10HeartbeatRequest\x12\x19\n" +
-	"\blease_id\x18\x01 \x01(\fR\aleaseId\"*\n" +
+	"\blease_id\x18\x01 \x01(\fR\aleaseId\".\n" +
+	"\x11HeartbeatResponse\x12\x19\n" +
+	"\blease_id\x18\x01 \x01(\fR\aleaseId\"C\n" +
 	"\rCancelRequest\x12\x19\n" +
-	"\bowner_id\x18\x01 \x01(\fR\aownerId\"j\n" +
-	"\x14ResumeResultsRequest\x12\x19\n" +
-	"\bowner_id\x18\x01 \x01(\fR\aownerId\x12!\n" +
-	"\fafter_cursor\x18\x02 \x01(\x04R\vafterCursor\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\rR\x05limit\"u\n" +
-	"\x10ObjectPutRequest\x12\x1f\n" +
-	"\vtransfer_id\x18\x01 \x01(\fR\n" +
-	"transferId\x12\x14\n" +
+	"\bowner_id\x18\x01 \x01(\fR\aownerId\x12\x17\n" +
+	"\atask_id\x18\x02 \x01(\fR\x06taskId\"G\n" +
+	"\x0eCancelResponse\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\fR\x06taskId\x12\x1c\n" +
+	"\tcancelled\x18\x02 \x01(\bR\tcancelled\"B\n" +
+	"\x10ObjectGetRequest\x12.\n" +
+	"\x06object\x18\x01 \x01(\v2\x16.taskwire.v1.ObjectRefR\x06object\"C\n" +
+	"\x11PutObjectResponse\x12.\n" +
+	"\x06object\x18\x01 \x01(\v2\x16.taskwire.v1.ObjectRefR\x06object\"c\n" +
+	"\vObjectChunk\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x12\x14\n" +
 	"\x05codec\x18\x02 \x01(\tR\x05codec\x12\x12\n" +
 	"\x04size\x18\x03 \x01(\x04R\x04size\x12\x16\n" +
-	"\x06sha256\x18\x04 \x01(\fR\x06sha256\"c\n" +
-	"\x10ObjectGetRequest\x12\x1f\n" +
-	"\vtransfer_id\x18\x01 \x01(\fR\n" +
-	"transferId\x12.\n" +
-	"\x06object\x18\x02 \x01(\v2\x16.taskwire.v1.ObjectRefR\x06object\"p\n" +
-	"\vObjectChunk\x12\x1f\n" +
-	"\vtransfer_id\x18\x01 \x01(\fR\n" +
-	"transferId\x12\x1a\n" +
-	"\bsequence\x18\x02 \x01(\rR\bsequence\x12\x12\n" +
-	"\x04data\x18\x03 \x01(\fR\x04data\x12\x10\n" +
-	"\x03eof\x18\x04 \x01(\bR\x03eof\"\xc5\x01\n" +
+	"\x06sha256\x18\x04 \x01(\fR\x06sha256\"\xc5\x01\n" +
 	"\fStealRequest\x12%\n" +
 	"\x0erequester_node\x18\x01 \x01(\tR\rrequesterNode\x12=\n" +
 	"\x06labels\x18\x02 \x03(\v2%.taskwire.v1.StealRequest.LabelsEntryR\x06labels\x12\x14\n" +
 	"\x05limit\x18\x03 \x01(\rR\x05limit\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x0f\n" +
-	"\rStatusRequestB8Z6github.com/sanketn26/taskwire/agent/pkg/protocol/pb;pbb\x06proto3"
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"L\n" +
+	"\rStealResponse\x12\x1f\n" +
+	"\vtransfer_id\x18\x01 \x01(\fR\n" +
+	"transferId\x12\x1a\n" +
+	"\baccepted\x18\x02 \x01(\rR\baccepted\"\x0f\n" +
+	"\rStatusRequest2\xcf\a\n" +
+	"\x0fTaskwireControl\x12@\n" +
+	"\x06Submit\x12\x19.taskwire.v1.TaskEnvelope\x1a\x1b.taskwire.v1.SubmitResponse\x12S\n" +
+	"\fWatchResults\x12 .taskwire.v1.WatchResultsRequest\x1a\x1f.taskwire.v1.ResultNotification0\x01\x12J\n" +
+	"\tAckResult\x12\x1d.taskwire.v1.AckResultRequest\x1a\x1e.taskwire.v1.AckResultResponse\x12A\n" +
+	"\x06Cancel\x12\x1a.taskwire.v1.CancelRequest\x1a\x1b.taskwire.v1.CancelResponse\x12?\n" +
+	"\n" +
+	"QueryTasks\x12\x16.taskwire.v1.TaskQuery\x1a\x19.taskwire.v1.TaskSnapshot\x12R\n" +
+	"\rRegisterTasks\x12\x1d.taskwire.v1.TaskRegistration\x1a\".taskwire.v1.RegisterTasksResponse\x12A\n" +
+	"\x04Work\x12\x1a.taskwire.v1.WorkerMessage\x1a\x19.taskwire.v1.AgentMessage(\x010\x01\x12G\n" +
+	"\tPutObject\x12\x18.taskwire.v1.ObjectChunk\x1a\x1e.taskwire.v1.PutObjectResponse(\x01\x12F\n" +
+	"\tGetObject\x12\x1d.taskwire.v1.ObjectGetRequest\x1a\x18.taskwire.v1.ObjectChunk0\x01\x12A\n" +
+	"\x06Status\x12\x1a.taskwire.v1.StatusRequest\x1a\x1b.taskwire.v1.StatusSnapshot\x12K\n" +
+	"\vForwardTask\x12\x1a.taskwire.v1.ForwardedTask\x1a .taskwire.v1.ForwardTaskResponse\x12]\n" +
+	"\x11ForwardCompletion\x12 .taskwire.v1.ForwardedCompletion\x1a&.taskwire.v1.ForwardCompletionResponse\x12>\n" +
+	"\x05Steal\x12\x19.taskwire.v1.StealRequest\x1a\x1a.taskwire.v1.StealResponseB8Z6github.com/sanketn26/taskwire/agent/pkg/protocol/pb;pbb\x06proto3"
 
 var (
 	file_taskwire_v1_control_proto_rawDescOnce sync.Once
@@ -2666,90 +2887,114 @@ func file_taskwire_v1_control_proto_rawDescGZIP() []byte {
 	return file_taskwire_v1_control_proto_rawDescData
 }
 
-var file_taskwire_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_taskwire_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
 var file_taskwire_v1_control_proto_goTypes = []any{
-	(*ControlMessage)(nil),       // 0: taskwire.v1.ControlMessage
-	(*ObjectRef)(nil),            // 1: taskwire.v1.ObjectRef
-	(*ValueRef)(nil),             // 2: taskwire.v1.ValueRef
-	(*Hello)(nil),                // 3: taskwire.v1.Hello
-	(*PullRequest)(nil),          // 4: taskwire.v1.PullRequest
-	(*TaskCapability)(nil),       // 5: taskwire.v1.TaskCapability
-	(*TaskRegistration)(nil),     // 6: taskwire.v1.TaskRegistration
-	(*TaskQuery)(nil),            // 7: taskwire.v1.TaskQuery
-	(*TaskSnapshotEntry)(nil),    // 8: taskwire.v1.TaskSnapshotEntry
-	(*TaskSnapshot)(nil),         // 9: taskwire.v1.TaskSnapshot
-	(*TaskEnvelope)(nil),         // 10: taskwire.v1.TaskEnvelope
-	(*LeasedTask)(nil),           // 11: taskwire.v1.LeasedTask
-	(*Completion)(nil),           // 12: taskwire.v1.Completion
-	(*ForwardedTask)(nil),        // 13: taskwire.v1.ForwardedTask
-	(*ForwardedCompletion)(nil),  // 14: taskwire.v1.ForwardedCompletion
-	(*Failure)(nil),              // 15: taskwire.v1.Failure
-	(*ResultNotification)(nil),   // 16: taskwire.v1.ResultNotification
-	(*StatusSnapshot)(nil),       // 17: taskwire.v1.StatusSnapshot
-	(*Ack)(nil),                  // 18: taskwire.v1.Ack
-	(*Error)(nil),                // 19: taskwire.v1.Error
-	(*HeartbeatRequest)(nil),     // 20: taskwire.v1.HeartbeatRequest
-	(*CancelRequest)(nil),        // 21: taskwire.v1.CancelRequest
-	(*ResumeResultsRequest)(nil), // 22: taskwire.v1.ResumeResultsRequest
-	(*ObjectPutRequest)(nil),     // 23: taskwire.v1.ObjectPutRequest
-	(*ObjectGetRequest)(nil),     // 24: taskwire.v1.ObjectGetRequest
-	(*ObjectChunk)(nil),          // 25: taskwire.v1.ObjectChunk
-	(*StealRequest)(nil),         // 26: taskwire.v1.StealRequest
-	(*StatusRequest)(nil),        // 27: taskwire.v1.StatusRequest
-	nil,                          // 28: taskwire.v1.TaskEnvelope.LabelsEntry
-	nil,                          // 29: taskwire.v1.StatusSnapshot.TaskCountsEntry
-	nil,                          // 30: taskwire.v1.Error.DetailsEntry
-	nil,                          // 31: taskwire.v1.StealRequest.LabelsEntry
+	(*WorkerMessage)(nil),              // 0: taskwire.v1.WorkerMessage
+	(*AgentMessage)(nil),               // 1: taskwire.v1.AgentMessage
+	(*WorkerRegistration)(nil),         // 2: taskwire.v1.WorkerRegistration
+	(*WorkerRegistrationResponse)(nil), // 3: taskwire.v1.WorkerRegistrationResponse
+	(*ObjectRef)(nil),                  // 4: taskwire.v1.ObjectRef
+	(*ValueRef)(nil),                   // 5: taskwire.v1.ValueRef
+	(*PullRequest)(nil),                // 6: taskwire.v1.PullRequest
+	(*TaskCapability)(nil),             // 7: taskwire.v1.TaskCapability
+	(*TaskRegistration)(nil),           // 8: taskwire.v1.TaskRegistration
+	(*RegisterTasksResponse)(nil),      // 9: taskwire.v1.RegisterTasksResponse
+	(*TaskQuery)(nil),                  // 10: taskwire.v1.TaskQuery
+	(*TaskSnapshotEntry)(nil),          // 11: taskwire.v1.TaskSnapshotEntry
+	(*TaskSnapshot)(nil),               // 12: taskwire.v1.TaskSnapshot
+	(*TaskEnvelope)(nil),               // 13: taskwire.v1.TaskEnvelope
+	(*SubmitResponse)(nil),             // 14: taskwire.v1.SubmitResponse
+	(*LeasedTask)(nil),                 // 15: taskwire.v1.LeasedTask
+	(*Completion)(nil),                 // 16: taskwire.v1.Completion
+	(*CompletionResponse)(nil),         // 17: taskwire.v1.CompletionResponse
+	(*ForwardedTask)(nil),              // 18: taskwire.v1.ForwardedTask
+	(*ForwardTaskResponse)(nil),        // 19: taskwire.v1.ForwardTaskResponse
+	(*ForwardedCompletion)(nil),        // 20: taskwire.v1.ForwardedCompletion
+	(*ForwardCompletionResponse)(nil),  // 21: taskwire.v1.ForwardCompletionResponse
+	(*Failure)(nil),                    // 22: taskwire.v1.Failure
+	(*ResultNotification)(nil),         // 23: taskwire.v1.ResultNotification
+	(*WatchResultsRequest)(nil),        // 24: taskwire.v1.WatchResultsRequest
+	(*AckResultRequest)(nil),           // 25: taskwire.v1.AckResultRequest
+	(*AckResultResponse)(nil),          // 26: taskwire.v1.AckResultResponse
+	(*StatusSnapshot)(nil),             // 27: taskwire.v1.StatusSnapshot
+	(*Error)(nil),                      // 28: taskwire.v1.Error
+	(*HeartbeatRequest)(nil),           // 29: taskwire.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),          // 30: taskwire.v1.HeartbeatResponse
+	(*CancelRequest)(nil),              // 31: taskwire.v1.CancelRequest
+	(*CancelResponse)(nil),             // 32: taskwire.v1.CancelResponse
+	(*ObjectGetRequest)(nil),           // 33: taskwire.v1.ObjectGetRequest
+	(*PutObjectResponse)(nil),          // 34: taskwire.v1.PutObjectResponse
+	(*ObjectChunk)(nil),                // 35: taskwire.v1.ObjectChunk
+	(*StealRequest)(nil),               // 36: taskwire.v1.StealRequest
+	(*StealResponse)(nil),              // 37: taskwire.v1.StealResponse
+	(*StatusRequest)(nil),              // 38: taskwire.v1.StatusRequest
+	nil,                                // 39: taskwire.v1.TaskEnvelope.LabelsEntry
+	nil,                                // 40: taskwire.v1.StatusSnapshot.TaskCountsEntry
+	nil,                                // 41: taskwire.v1.Error.DetailsEntry
+	nil,                                // 42: taskwire.v1.StealRequest.LabelsEntry
 }
 var file_taskwire_v1_control_proto_depIdxs = []int32{
-	10, // 0: taskwire.v1.ControlMessage.submit:type_name -> taskwire.v1.TaskEnvelope
-	13, // 1: taskwire.v1.ControlMessage.forwarded_submit:type_name -> taskwire.v1.ForwardedTask
-	4,  // 2: taskwire.v1.ControlMessage.pull:type_name -> taskwire.v1.PullRequest
-	11, // 3: taskwire.v1.ControlMessage.task:type_name -> taskwire.v1.LeasedTask
-	20, // 4: taskwire.v1.ControlMessage.heartbeat:type_name -> taskwire.v1.HeartbeatRequest
-	16, // 5: taskwire.v1.ControlMessage.result:type_name -> taskwire.v1.ResultNotification
-	21, // 6: taskwire.v1.ControlMessage.cancel:type_name -> taskwire.v1.CancelRequest
-	12, // 7: taskwire.v1.ControlMessage.complete:type_name -> taskwire.v1.Completion
-	14, // 8: taskwire.v1.ControlMessage.forwarded_complete:type_name -> taskwire.v1.ForwardedCompletion
-	26, // 9: taskwire.v1.ControlMessage.steal:type_name -> taskwire.v1.StealRequest
-	18, // 10: taskwire.v1.ControlMessage.ack:type_name -> taskwire.v1.Ack
-	27, // 11: taskwire.v1.ControlMessage.status_request:type_name -> taskwire.v1.StatusRequest
-	17, // 12: taskwire.v1.ControlMessage.status_snapshot:type_name -> taskwire.v1.StatusSnapshot
-	22, // 13: taskwire.v1.ControlMessage.resume_results:type_name -> taskwire.v1.ResumeResultsRequest
-	19, // 14: taskwire.v1.ControlMessage.error:type_name -> taskwire.v1.Error
-	23, // 15: taskwire.v1.ControlMessage.object_put:type_name -> taskwire.v1.ObjectPutRequest
-	24, // 16: taskwire.v1.ControlMessage.object_get:type_name -> taskwire.v1.ObjectGetRequest
-	25, // 17: taskwire.v1.ControlMessage.object_chunk:type_name -> taskwire.v1.ObjectChunk
-	3,  // 18: taskwire.v1.ControlMessage.hello:type_name -> taskwire.v1.Hello
-	7,  // 19: taskwire.v1.ControlMessage.task_query:type_name -> taskwire.v1.TaskQuery
-	9,  // 20: taskwire.v1.ControlMessage.task_snapshot:type_name -> taskwire.v1.TaskSnapshot
-	6,  // 21: taskwire.v1.ControlMessage.register_tasks:type_name -> taskwire.v1.TaskRegistration
-	1,  // 22: taskwire.v1.ValueRef.object:type_name -> taskwire.v1.ObjectRef
-	5,  // 23: taskwire.v1.TaskRegistration.tasks:type_name -> taskwire.v1.TaskCapability
-	1,  // 24: taskwire.v1.TaskSnapshotEntry.result:type_name -> taskwire.v1.ObjectRef
-	15, // 25: taskwire.v1.TaskSnapshotEntry.failure:type_name -> taskwire.v1.Failure
-	8,  // 26: taskwire.v1.TaskSnapshot.tasks:type_name -> taskwire.v1.TaskSnapshotEntry
-	2,  // 27: taskwire.v1.TaskEnvelope.input:type_name -> taskwire.v1.ValueRef
-	28, // 28: taskwire.v1.TaskEnvelope.labels:type_name -> taskwire.v1.TaskEnvelope.LabelsEntry
-	10, // 29: taskwire.v1.LeasedTask.task:type_name -> taskwire.v1.TaskEnvelope
-	1,  // 30: taskwire.v1.Completion.result:type_name -> taskwire.v1.ObjectRef
-	15, // 31: taskwire.v1.Completion.failure:type_name -> taskwire.v1.Failure
-	10, // 32: taskwire.v1.ForwardedTask.task:type_name -> taskwire.v1.TaskEnvelope
-	1,  // 33: taskwire.v1.ForwardedCompletion.result:type_name -> taskwire.v1.ObjectRef
-	15, // 34: taskwire.v1.ForwardedCompletion.failure:type_name -> taskwire.v1.Failure
-	2,  // 35: taskwire.v1.Failure.details:type_name -> taskwire.v1.ValueRef
-	1,  // 36: taskwire.v1.ResultNotification.result:type_name -> taskwire.v1.ObjectRef
-	15, // 37: taskwire.v1.ResultNotification.failure:type_name -> taskwire.v1.Failure
-	29, // 38: taskwire.v1.StatusSnapshot.task_counts:type_name -> taskwire.v1.StatusSnapshot.TaskCountsEntry
-	1,  // 39: taskwire.v1.Ack.object:type_name -> taskwire.v1.ObjectRef
-	30, // 40: taskwire.v1.Error.details:type_name -> taskwire.v1.Error.DetailsEntry
-	1,  // 41: taskwire.v1.ObjectGetRequest.object:type_name -> taskwire.v1.ObjectRef
-	31, // 42: taskwire.v1.StealRequest.labels:type_name -> taskwire.v1.StealRequest.LabelsEntry
-	43, // [43:43] is the sub-list for method output_type
-	43, // [43:43] is the sub-list for method input_type
-	43, // [43:43] is the sub-list for extension type_name
-	43, // [43:43] is the sub-list for extension extendee
-	0,  // [0:43] is the sub-list for field type_name
+	2,  // 0: taskwire.v1.WorkerMessage.register:type_name -> taskwire.v1.WorkerRegistration
+	6,  // 1: taskwire.v1.WorkerMessage.pull:type_name -> taskwire.v1.PullRequest
+	29, // 2: taskwire.v1.WorkerMessage.heartbeat:type_name -> taskwire.v1.HeartbeatRequest
+	16, // 3: taskwire.v1.WorkerMessage.complete:type_name -> taskwire.v1.Completion
+	15, // 4: taskwire.v1.AgentMessage.task:type_name -> taskwire.v1.LeasedTask
+	30, // 5: taskwire.v1.AgentMessage.heartbeat_ack:type_name -> taskwire.v1.HeartbeatResponse
+	17, // 6: taskwire.v1.AgentMessage.complete_ack:type_name -> taskwire.v1.CompletionResponse
+	3,  // 7: taskwire.v1.AgentMessage.registered:type_name -> taskwire.v1.WorkerRegistrationResponse
+	8,  // 8: taskwire.v1.WorkerRegistration.tasks:type_name -> taskwire.v1.TaskRegistration
+	4,  // 9: taskwire.v1.ValueRef.object:type_name -> taskwire.v1.ObjectRef
+	7,  // 10: taskwire.v1.TaskRegistration.tasks:type_name -> taskwire.v1.TaskCapability
+	4,  // 11: taskwire.v1.TaskSnapshotEntry.result:type_name -> taskwire.v1.ObjectRef
+	22, // 12: taskwire.v1.TaskSnapshotEntry.failure:type_name -> taskwire.v1.Failure
+	11, // 13: taskwire.v1.TaskSnapshot.tasks:type_name -> taskwire.v1.TaskSnapshotEntry
+	5,  // 14: taskwire.v1.TaskEnvelope.input:type_name -> taskwire.v1.ValueRef
+	39, // 15: taskwire.v1.TaskEnvelope.labels:type_name -> taskwire.v1.TaskEnvelope.LabelsEntry
+	13, // 16: taskwire.v1.LeasedTask.task:type_name -> taskwire.v1.TaskEnvelope
+	4,  // 17: taskwire.v1.Completion.result:type_name -> taskwire.v1.ObjectRef
+	22, // 18: taskwire.v1.Completion.failure:type_name -> taskwire.v1.Failure
+	13, // 19: taskwire.v1.ForwardedTask.task:type_name -> taskwire.v1.TaskEnvelope
+	4,  // 20: taskwire.v1.ForwardedCompletion.result:type_name -> taskwire.v1.ObjectRef
+	22, // 21: taskwire.v1.ForwardedCompletion.failure:type_name -> taskwire.v1.Failure
+	5,  // 22: taskwire.v1.Failure.details:type_name -> taskwire.v1.ValueRef
+	4,  // 23: taskwire.v1.ResultNotification.result:type_name -> taskwire.v1.ObjectRef
+	22, // 24: taskwire.v1.ResultNotification.failure:type_name -> taskwire.v1.Failure
+	40, // 25: taskwire.v1.StatusSnapshot.task_counts:type_name -> taskwire.v1.StatusSnapshot.TaskCountsEntry
+	41, // 26: taskwire.v1.Error.details:type_name -> taskwire.v1.Error.DetailsEntry
+	4,  // 27: taskwire.v1.ObjectGetRequest.object:type_name -> taskwire.v1.ObjectRef
+	4,  // 28: taskwire.v1.PutObjectResponse.object:type_name -> taskwire.v1.ObjectRef
+	42, // 29: taskwire.v1.StealRequest.labels:type_name -> taskwire.v1.StealRequest.LabelsEntry
+	13, // 30: taskwire.v1.TaskwireControl.Submit:input_type -> taskwire.v1.TaskEnvelope
+	24, // 31: taskwire.v1.TaskwireControl.WatchResults:input_type -> taskwire.v1.WatchResultsRequest
+	25, // 32: taskwire.v1.TaskwireControl.AckResult:input_type -> taskwire.v1.AckResultRequest
+	31, // 33: taskwire.v1.TaskwireControl.Cancel:input_type -> taskwire.v1.CancelRequest
+	10, // 34: taskwire.v1.TaskwireControl.QueryTasks:input_type -> taskwire.v1.TaskQuery
+	8,  // 35: taskwire.v1.TaskwireControl.RegisterTasks:input_type -> taskwire.v1.TaskRegistration
+	0,  // 36: taskwire.v1.TaskwireControl.Work:input_type -> taskwire.v1.WorkerMessage
+	35, // 37: taskwire.v1.TaskwireControl.PutObject:input_type -> taskwire.v1.ObjectChunk
+	33, // 38: taskwire.v1.TaskwireControl.GetObject:input_type -> taskwire.v1.ObjectGetRequest
+	38, // 39: taskwire.v1.TaskwireControl.Status:input_type -> taskwire.v1.StatusRequest
+	18, // 40: taskwire.v1.TaskwireControl.ForwardTask:input_type -> taskwire.v1.ForwardedTask
+	20, // 41: taskwire.v1.TaskwireControl.ForwardCompletion:input_type -> taskwire.v1.ForwardedCompletion
+	36, // 42: taskwire.v1.TaskwireControl.Steal:input_type -> taskwire.v1.StealRequest
+	14, // 43: taskwire.v1.TaskwireControl.Submit:output_type -> taskwire.v1.SubmitResponse
+	23, // 44: taskwire.v1.TaskwireControl.WatchResults:output_type -> taskwire.v1.ResultNotification
+	26, // 45: taskwire.v1.TaskwireControl.AckResult:output_type -> taskwire.v1.AckResultResponse
+	32, // 46: taskwire.v1.TaskwireControl.Cancel:output_type -> taskwire.v1.CancelResponse
+	12, // 47: taskwire.v1.TaskwireControl.QueryTasks:output_type -> taskwire.v1.TaskSnapshot
+	9,  // 48: taskwire.v1.TaskwireControl.RegisterTasks:output_type -> taskwire.v1.RegisterTasksResponse
+	1,  // 49: taskwire.v1.TaskwireControl.Work:output_type -> taskwire.v1.AgentMessage
+	34, // 50: taskwire.v1.TaskwireControl.PutObject:output_type -> taskwire.v1.PutObjectResponse
+	35, // 51: taskwire.v1.TaskwireControl.GetObject:output_type -> taskwire.v1.ObjectChunk
+	27, // 52: taskwire.v1.TaskwireControl.Status:output_type -> taskwire.v1.StatusSnapshot
+	19, // 53: taskwire.v1.TaskwireControl.ForwardTask:output_type -> taskwire.v1.ForwardTaskResponse
+	21, // 54: taskwire.v1.TaskwireControl.ForwardCompletion:output_type -> taskwire.v1.ForwardCompletionResponse
+	37, // 55: taskwire.v1.TaskwireControl.Steal:output_type -> taskwire.v1.StealResponse
+	43, // [43:56] is the sub-list for method output_type
+	30, // [30:43] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	30, // [30:30] is the sub-list for extension extendee
+	0,  // [0:30] is the sub-list for field type_name
 }
 
 func init() { file_taskwire_v1_control_proto_init() }
@@ -2758,60 +3003,47 @@ func file_taskwire_v1_control_proto_init() {
 		return
 	}
 	file_taskwire_v1_control_proto_msgTypes[0].OneofWrappers = []any{
-		(*ControlMessage_Submit)(nil),
-		(*ControlMessage_ForwardedSubmit)(nil),
-		(*ControlMessage_Pull)(nil),
-		(*ControlMessage_Task)(nil),
-		(*ControlMessage_Heartbeat)(nil),
-		(*ControlMessage_Result)(nil),
-		(*ControlMessage_Cancel)(nil),
-		(*ControlMessage_Complete)(nil),
-		(*ControlMessage_ForwardedComplete)(nil),
-		(*ControlMessage_Steal)(nil),
-		(*ControlMessage_Ack)(nil),
-		(*ControlMessage_StatusRequest)(nil),
-		(*ControlMessage_StatusSnapshot)(nil),
-		(*ControlMessage_ResumeResults)(nil),
-		(*ControlMessage_Error)(nil),
-		(*ControlMessage_ObjectPut)(nil),
-		(*ControlMessage_ObjectGet)(nil),
-		(*ControlMessage_ObjectChunk)(nil),
-		(*ControlMessage_Hello)(nil),
-		(*ControlMessage_TaskQuery)(nil),
-		(*ControlMessage_TaskSnapshot)(nil),
-		(*ControlMessage_RegisterTasks)(nil),
+		(*WorkerMessage_Register)(nil),
+		(*WorkerMessage_Pull)(nil),
+		(*WorkerMessage_Heartbeat)(nil),
+		(*WorkerMessage_Complete)(nil),
 	}
-	file_taskwire_v1_control_proto_msgTypes[2].OneofWrappers = []any{
+	file_taskwire_v1_control_proto_msgTypes[1].OneofWrappers = []any{
+		(*AgentMessage_Task)(nil),
+		(*AgentMessage_HeartbeatAck)(nil),
+		(*AgentMessage_CompleteAck)(nil),
+		(*AgentMessage_Registered)(nil),
+	}
+	file_taskwire_v1_control_proto_msgTypes[5].OneofWrappers = []any{
 		(*ValueRef_Inline)(nil),
 		(*ValueRef_Object)(nil),
 	}
-	file_taskwire_v1_control_proto_msgTypes[8].OneofWrappers = []any{
+	file_taskwire_v1_control_proto_msgTypes[11].OneofWrappers = []any{
 		(*TaskSnapshotEntry_Result)(nil),
 		(*TaskSnapshotEntry_Failure)(nil),
 	}
-	file_taskwire_v1_control_proto_msgTypes[12].OneofWrappers = []any{
+	file_taskwire_v1_control_proto_msgTypes[16].OneofWrappers = []any{
 		(*Completion_Result)(nil),
 		(*Completion_Failure)(nil),
 	}
-	file_taskwire_v1_control_proto_msgTypes[14].OneofWrappers = []any{
+	file_taskwire_v1_control_proto_msgTypes[20].OneofWrappers = []any{
 		(*ForwardedCompletion_Result)(nil),
 		(*ForwardedCompletion_Failure)(nil),
 	}
-	file_taskwire_v1_control_proto_msgTypes[16].OneofWrappers = []any{
+	file_taskwire_v1_control_proto_msgTypes[23].OneofWrappers = []any{
 		(*ResultNotification_Result)(nil),
 		(*ResultNotification_Failure)(nil),
 	}
-	file_taskwire_v1_control_proto_msgTypes[17].OneofWrappers = []any{}
-	file_taskwire_v1_control_proto_msgTypes[18].OneofWrappers = []any{}
+	file_taskwire_v1_control_proto_msgTypes[27].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_taskwire_v1_control_proto_rawDesc), len(file_taskwire_v1_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   32,
+			NumMessages:   43,
 			NumExtensions: 0,
-			NumServices:   0,
+			NumServices:   1,
 		},
 		GoTypes:           file_taskwire_v1_control_proto_goTypes,
 		DependencyIndexes: file_taskwire_v1_control_proto_depIdxs,

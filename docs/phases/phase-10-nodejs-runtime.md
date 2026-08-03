@@ -47,7 +47,7 @@ the worker implementation package to be imported.
 
 ## Implementation Contract
 
-- Load and validate the complete registry before connecting; send worker HELLO
+- Load and validate the complete registry before connecting; open the Work stream
   and generation 1 registration before PULL. Reconnect republishes the registry.
 - Use one socket reader, one serialized writer, request-ID dispatch, bounded
   object transfers, deadlines, and checksum verification matching Phase 3.
@@ -78,9 +78,9 @@ sdk/nodejs/test/{protocol,client,worker,conformance}.test.ts
 - Register alongside synthetic Python and Go workers; only compatible task
   implementations receive leases, with labels applied after compatibility.
 - Execute success, thrown Error, rejected non-Error, object-backed input/result,
-  heartbeat, lost lease, cancellation, worker crash/restart, and lost COMPLETE ACK.
+  heartbeat, lost lease, cancellation, worker crash/restart, and lost completion response.
 - Prove uint64 boundaries round-trip as bigint and unsafe number conversion fails.
-- Prove malformed frames, duplicate keys, oversized lengths, unknown fields, and
+- Prove malformed messages, duplicate keys, oversized lengths, unknown fields, and
   unsupported codecs fail closed without unbounded allocation or process exit.
 - Client reconnect, owner/cursor replay, reattach, cancellation race, and
   first-terminal-wins match the Python SDK behavior.
@@ -109,7 +109,7 @@ sdk/nodejs/
   package.json
   tsconfig.json
   src/
-    protocol/{frame,messages,session}.ts
+    protocol/{client,messages,session}.ts
     codec/portable.ts
     client.ts
     worker.ts
@@ -155,7 +155,7 @@ await client.close();
 ### Implementation loop (mirror Phase 3)
 
 ```typescript
-// 1. HELLO worker (runtime: "nodejs", codecs: ["msgpack","bytes"])
+// 1. Work stream: WorkerRegistration (runtime: "nodejs", codecs: ["msgpack","bytes"])
 // 2. REGISTER_TASKS generation 1
 // 3. PULL → TASK | empty
 // 4. start heartbeat (ttl/3)
@@ -203,7 +203,7 @@ cd sdk/nodejs && npm test
 - [ ] Interchangeable with Python for same portable `name@version`  
 - [ ] bigint boundaries tested  
 - [ ] No agent schema/wire changes  
-- [ ] Fail closed on malformed frames (no process crash)  
+- [ ] Fail closed on malformed messages (no process crash)  
 
 ### Review request
 

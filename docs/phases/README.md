@@ -35,8 +35,8 @@ If a vision or architecture doc disagrees with a phase, **the phase wins**.
 | Phase | Status | Notes |
 |------:|--------|-------|
 | 0 | **Baseline present** | Wheel, harness, version parity, stub agent lifecycle |
-| 1 | **Baseline present** | Frames, Protobuf, session, config loaders, HELLO/STATUS stub |
-| 2 | **Not started** | `stubserver` only; no real state/object stores or task IPC |
+| 1 | **Baseline present** | gRPC service, Protobuf, session, config loaders, Status server |
+| 2 | **Not started** | `controlserver` only; no real state/object stores or scheduling |
 | 3–4 | **Not started** | Package roots exist; no worker/SDK implementation |
 | 5–12 | **Not started** | Spec-only (Phase 12 is a detailed product contract) |
 
@@ -44,7 +44,7 @@ Confirm status yourself with:
 
 ```bash
 make unit && make integration && make smoke-wheel
-ls agent/internal/stubserver agent/internal/state 2>/dev/null
+ls agent/internal/controlserver agent/internal/state 2>/dev/null
 ls python/taskwire/worker python/taskwire/runtime.py 2>/dev/null
 ```
 
@@ -114,7 +114,7 @@ make format lint unit integration smoke-wheel
 
 **Phase 2** is the next real product surface. Follow
 [phase-2-sidecar-core.md](phase-2-sidecar-core.md) Implementation Guide end-to-end
-(memory stores → SQLite/filesystem → IPC → replace stubserver).
+(memory stores → SQLite/filesystem → scheduling → replace controlserver's stubs).
 
 Phases 0 and 1 Implementation Guides are residual-check / orientation only unless
 your tree is missing those tests.

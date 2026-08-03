@@ -30,15 +30,15 @@ func TestPortableValueRejectsUnsupportedValues(t *testing.T) {
 func TestPortableDuplicateKeyAndTrailingClassification(t *testing.T) {
 	duplicate := []byte{0x82, 0xa1, 'a', 0x01, 0xa1, 'a', 0x02}
 	_, err := DecodePortableValue(duplicate)
-	if err == nil || err.(*DecodeError).Code != InvalidMessage {
+	if err == nil || err.(*ProtocolError).Code != InvalidMessage {
 		t.Fatalf("duplicate key: %v", err)
 	}
 	_, err = DecodePortableValue([]byte{0x01, 0x02})
-	if err == nil || err.(*DecodeError).Code != InvalidMessage {
+	if err == nil || err.(*ProtocolError).Code != InvalidMessage {
 		t.Fatalf("full trailing value: %v", err)
 	}
 	_, err = DecodePortableValue([]byte{0x01, 0xd9})
-	if err == nil || err.(*DecodeError).Code != MalformedPayload {
+	if err == nil || err.(*ProtocolError).Code != MalformedPayload {
 		t.Fatalf("truncated trailing value: %v", err)
 	}
 }

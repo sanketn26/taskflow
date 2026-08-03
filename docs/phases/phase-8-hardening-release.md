@@ -59,7 +59,7 @@ Metrics include:
 - result replay lag, unacknowledged result count, retention expiry;
 - object bytes/latency/checksum failures/partial cleanup;
 - worker count, restarts, circuit-breaker state, heartbeat failures;
-- IPC connections, malformed frames, rejected/timeout submissions;
+- gRPC connections, malformed messages, rejected/timeout submissions;
 - cluster membership, transfer state/age, auth failures, forwarded completions;
 - Kafka outbox pending age/count, retries, permanent errors, delivery latency.
 
@@ -70,7 +70,7 @@ Metrics labels must be bounded; task/owner IDs are never labels. Health endpoint
 - Document the Unix socket and cloudpickle trusted-code boundaries prominently.
 - Verify socket ownership/mode and state/object directory permissions at startup; refuse unsafe modes unless an explicit development override exists.
 - Cluster authentication is required by default; rotate-key procedure and mixed-key behavior are documented/tested.
-- Validate paths against traversal/symlink surprises and cap all frame, envelope, object, batch, and metadata sizes.
+- Validate paths against traversal/symlink surprises and cap all message, object, batch, and metadata sizes.
 - Run fuzzers, dependency/vulnerability scans, secret scanning, static analysis, and a threat-model review covering local privilege, cluster impersonation, object tampering, replay, and denial of service.
 - Publish supported-version and security-reporting policies.
 
@@ -189,7 +189,7 @@ GET /readyz  → stores usable + socket listening
 - [ ] Socket mode 0660 + ownership check at startup  
 - [ ] State/object dirs permissions verified  
 - [ ] Path traversal tests on filesystem store  
-- [ ] Frame size caps fuzzed  
+- [ ] Message size caps fuzzed  
 - [ ] `govulncheck`, dependency audit, secret scan in CI  
 - [ ] Threat model note in `docs/security.md` (Phase 9 may host final docs)
 

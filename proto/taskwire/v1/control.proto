@@ -4,36 +4,116 @@ package taskwire.v1;
 
 option go_package = "github.com/sanketn26/taskwire/agent/pkg/protocol/pb;pb";
 
-// ControlMessage is the sole protobuf payload carried by Taskwire's thin
-// length-bounded frame. Task inputs and results remain opaque bytes identified
-// by ValueRef.codec; "msgpack" there is an application-value codec, not the
-// control-plane encoding.
-message ControlMessage {
+// TaskwireControl is the authoritative control-plane contract. gRPC over
+// HTTP/2 supplies framing, request correlation, deadlines, flow control, and
+// cancellation; Taskwire defines only the messages and their semantics.
+//
+// Task inputs and results remain opaque bytes identified by ValueRef.codec;
+// "msgpack" there is an application-value codec, not the control-plane
+// encoding.
+//
+// Roles (runtime, worker, admin) are carried in per-RPC metadata rather than a
+// HELLO handshake message; see docs/protocol.md. Errors use gRPC status codes
+// with a Taskwire stable error code in the status details.
+service TaskwireControl {
+  // --- Runtime (submitting application) --------------------------------
+
+  // Submit enqueues one task. The response is sent only after the input and
+  // task-state durability boundary, preserving the durable submit ACK.
+  rpc Submit(TaskEnvelope) returns (SubmitResponse);
+
+  // WatchResults streams terminal result notifications for one owner,
+  // resuming after the supplied cursor. Replaces RESUME_RESULTS plus
+  // unsolicited RESULT frames: stream position is the cursor, so a
+  // reconnecting Runtime replays by reopening the stream.
+  rpc WatchResults(WatchResultsRequest) returns (stream ResultNotification);
+
+  // AckResult confirms durable client-side handling of one notification so
+  // the agent may release it before retention expiry.
+  rpc AckResult(AckResultRequest) returns (AckResultResponse);
+
+  // Cancel requests cancellation of an owner's task.
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+
+  // QueryTasks returns owner-isolated task snapshots.
+  rpc QueryTasks(TaskQuery) returns (TaskSnapshot);
+
+  // --- Worker ----------------------------------------------------------
+
+  // RegisterTasks atomically replaces the connection's task capability set.
+  rpc RegisterTasks(TaskRegistration) returns (RegisterTasksResponse);
+
+  // Work is the worker's long-lived duplex session. The worker sends its
+  // registration, pull requests, heartbeats, and completions; the agent
+  // sends leased tasks. Stream lifetime bounds lease ownership, so a
+  // dropped connection is an unambiguous signal to reap leases.
+  rpc Work(stream WorkerMessage) returns (stream AgentMessage);
+
+  // --- Objects ---------------------------------------------------------
+
+  // PutObject streams object content; the response carries the canonical
+  // ObjectRef after size/checksum verification and the durability boundary.
+  rpc PutObject(stream ObjectChunk) returns (PutObjectResponse);
+
+  // GetObject streams stored object content.
+  rpc GetObject(ObjectGetRequest) returns (stream ObjectChunk);
+
+  // --- Admin / cluster --------------------------------------------------
+
+  // Status returns an agent status snapshot. Also serves as the readiness
+  // probe used by the CLI and test harness.
+  rpc Status(StatusRequest) returns (StatusSnapshot);
+
+  // ForwardTask transfers a task to a peer agent (cluster, Phase 5).
+  rpc ForwardTask(ForwardedTask) returns (ForwardTaskResponse);
+
+  // ForwardCompletion returns a remote completion to the origin agent.
+  rpc ForwardCompletion(ForwardedCompletion) returns (ForwardCompletionResponse);
+
+  // Steal requests work from a peer agent (cluster, Phase 5).
+  rpc Steal(StealRequest) returns (StealResponse);
+}
+
+// --- Worker session envelopes ------------------------------------------
+
+// WorkerMessage is the worker-to-agent branch of the Work stream.
+message WorkerMessage {
   oneof body {
-    TaskEnvelope submit = 1;
-    ForwardedTask forwarded_submit = 2;
-    PullRequest pull = 3;
-    LeasedTask task = 4;
-    HeartbeatRequest heartbeat = 5;
-    ResultNotification result = 6;
-    CancelRequest cancel = 7;
-    Completion complete = 8;
-    ForwardedCompletion forwarded_complete = 9;
-    StealRequest steal = 10;
-    Ack ack = 11;
-    StatusRequest status_request = 12;
-    StatusSnapshot status_snapshot = 13;
-    ResumeResultsRequest resume_results = 14;
-    Error error = 15;
-    ObjectPutRequest object_put = 16;
-    ObjectGetRequest object_get = 17;
-    ObjectChunk object_chunk = 18;
-    Hello hello = 19;
-    TaskQuery task_query = 20;
-    TaskSnapshot task_snapshot = 21;
-    TaskRegistration register_tasks = 22;
+    WorkerRegistration register = 1;
+    PullRequest pull = 2;
+    HeartbeatRequest heartbeat = 3;
+    Completion complete = 4;
   }
 }
+
+// AgentMessage is the agent-to-worker branch of the Work stream.
+message AgentMessage {
+  oneof body {
+    LeasedTask task = 1;
+    HeartbeatResponse heartbeat_ack = 2;
+    CompletionResponse complete_ack = 3;
+    WorkerRegistrationResponse registered = 4;
+  }
+}
+
+// WorkerRegistration opens a Work stream: it carries the identity fields the
+// removed worker HELLO used to establish, plus the initial capability set.
+message WorkerRegistration {
+  string worker_id = 1;
+  string runtime = 2;
+  string runtime_version = 3;
+  string sdk_version = 4;
+  repeated string codecs = 5;
+  TaskRegistration tasks = 6;
+}
+
+message WorkerRegistrationResponse {
+  string worker_id = 1;
+  uint64 generation = 2;
+  uint32 accepted = 3;
+}
+
+// --- Core value and reference types ------------------------------------
 
 message ObjectRef {
   string store = 1;
@@ -49,16 +129,6 @@ message ValueRef {
     ObjectRef object = 2;
   }
   string codec = 3;
-}
-
-message Hello {
-  string role = 1;
-  bytes owner_id = 2;
-  string worker_id = 3;
-  string runtime = 4;
-  string runtime_version = 5;
-  string sdk_version = 6;
-  repeated string codecs = 7;
 }
 
 message PullRequest {
@@ -77,6 +147,12 @@ message TaskRegistration {
   string worker_id = 1;
   uint64 generation = 2;
   repeated TaskCapability tasks = 3;
+}
+
+message RegisterTasksResponse {
+  string worker_id = 1;
+  uint64 generation = 2;
+  uint32 accepted = 3;
 }
 
 message TaskQuery {
@@ -107,11 +183,14 @@ message TaskEnvelope {
   int64 submitted_at_unix_ms = 8;
 }
 
+message SubmitResponse { bytes task_id = 1; }
+
 message LeasedTask {
   TaskEnvelope task = 1;
-  bytes lease_id = 2;
-  uint32 ttl_ms = 3;
-  uint32 attempt = 4;
+  bytes task_id = 2;
+  bytes lease_id = 3;
+  uint32 ttl_ms = 4;
+  uint32 attempt = 5;
 }
 
 message Completion {
@@ -122,10 +201,17 @@ message Completion {
   }
 }
 
+message CompletionResponse { bytes lease_id = 1; }
+
 message ForwardedTask {
   bytes transfer_id = 1;
   string origin_node = 2;
   TaskEnvelope task = 3;
+}
+
+message ForwardTaskResponse {
+  bytes task_id = 1;
+  bytes transfer_id = 2;
 }
 
 message ForwardedCompletion {
@@ -138,6 +224,8 @@ message ForwardedCompletion {
   }
 }
 
+message ForwardCompletionResponse { bytes transfer_id = 1; }
+
 message Failure {
   string code = 1;
   string message = 2;
@@ -147,13 +235,27 @@ message Failure {
 
 message ResultNotification {
   bytes owner_id = 1;
-  uint64 cursor = 2;
-  string state = 3;
+  bytes task_id = 2;
+  uint64 cursor = 3;
+  string state = 4;
   oneof outcome {
-    ObjectRef result = 4;
-    Failure failure = 5;
+    ObjectRef result = 5;
+    Failure failure = 6;
   }
 }
+
+message WatchResultsRequest {
+  bytes owner_id = 1;
+  uint64 after_cursor = 2;
+}
+
+message AckResultRequest {
+  bytes owner_id = 1;
+  bytes task_id = 2;
+  uint64 cursor = 3;
+}
+
+message AckResultResponse {}
 
 message StatusSnapshot {
   string version = 1;
@@ -169,22 +271,8 @@ message StatusSnapshot {
   optional string last_error_code = 11;
 }
 
-message Ack {
-  string kind = 1;
-  bytes task_id = 2;
-  bytes transfer_id = 3;
-  bytes lease_id = 4;
-  bytes owner_id = 5;
-  optional uint64 cursor = 6;
-  optional bool cancelled = 7;
-  ObjectRef object = 8;
-  optional uint64 next_cursor = 9;
-  optional bool more = 10;
-  optional uint32 accepted = 11;
-  string worker_id = 12;
-  optional uint64 generation = 13;
-}
-
+// Error is carried in gRPC status details so a stable Taskwire code and
+// retryability survive alongside the transport status code.
 message Error {
   string code = 1;
   string message = 2;
@@ -193,37 +281,42 @@ message Error {
 }
 
 message HeartbeatRequest { bytes lease_id = 1; }
-message CancelRequest { bytes owner_id = 1; }
+message HeartbeatResponse { bytes lease_id = 1; }
 
-message ResumeResultsRequest {
+message CancelRequest {
   bytes owner_id = 1;
-  uint64 after_cursor = 2;
-  uint32 limit = 3;
+  bytes task_id = 2;
 }
 
-message ObjectPutRequest {
-  bytes transfer_id = 1;
+message CancelResponse {
+  bytes task_id = 1;
+  bool cancelled = 2;
+}
+
+message ObjectGetRequest { ObjectRef object = 1; }
+
+message PutObjectResponse { ObjectRef object = 1; }
+
+// ObjectChunk carries object content. The first chunk of a PutObject stream
+// sets metadata (codec, size, sha256); subsequent chunks carry data only.
+// gRPC delivers chunks in order, so an explicit sequence number is no longer
+// part of the contract.
+message ObjectChunk {
+  bytes data = 1;
   string codec = 2;
   uint64 size = 3;
   bytes sha256 = 4;
-}
-
-message ObjectGetRequest {
-  bytes transfer_id = 1;
-  ObjectRef object = 2;
-}
-
-message ObjectChunk {
-  bytes transfer_id = 1;
-  uint32 sequence = 2;
-  bytes data = 3;
-  bool eof = 4;
 }
 
 message StealRequest {
   string requester_node = 1;
   map<string, string> labels = 2;
   uint32 limit = 3;
+}
+
+message StealResponse {
+  bytes transfer_id = 1;
+  uint32 accepted = 2;
 }
 
 message StatusRequest {}

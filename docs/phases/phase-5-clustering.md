@@ -23,9 +23,9 @@ Multiple agents discover one another, authenticate cluster traffic, route tasks 
 - Enabled clustering requires a decoded 32-byte key unless the explicit development-only `allow_insecure` switch is true.
 - Gossip uses memberlist encryption. Every task-channel connection also uses mutual challenge/response HMAC with nonces, timestamp skew bounds, and replay protection.
 - The cluster listener accepts only cluster message types; `STATUS`, Runtime result resume, and local object-path operations are never exposed remotely.
-- Frame and request limits apply before authentication and before allocation.
+- Message size limits apply before authentication and before allocation.
 
-The task-channel handshake is `AUTH_CHALLENGE {node_name, nonce: binary(32), unix_ms: int64}` followed by `AUTH_RESPONSE {node_name, peer_nonce: binary(32), nonce: binary(32), unix_ms: int64, mac: binary(32)}` and a reciprocal response. The HMAC-SHA256 input is the protocol version, both length-prefixed node names, both nonces in challenge order, and both big-endian timestamps. Each side verifies advertised membership identity, constant-time MAC equality, `cluster.auth_clock_skew_ms`, and a bounded nonce replay cache before accepting Phase 1 frames. Authentication messages use a cluster transport preface and are not valid on local IPC; no unauthenticated payload is decoded beyond its fixed maximum.
+The task-channel handshake is `AUTH_CHALLENGE {node_name, nonce: binary(32), unix_ms: int64}` followed by `AUTH_RESPONSE {node_name, peer_nonce: binary(32), nonce: binary(32), unix_ms: int64, mac: binary(32)}` and a reciprocal response. The HMAC-SHA256 input is the protocol version, both length-prefixed node names, both nonces in challenge order, and both big-endian timestamps. Each side verifies advertised membership identity, constant-time MAC equality, `cluster.auth_clock_skew_ms`, and a bounded nonce replay cache before accepting Phase 1 cluster RPCs. Authentication uses a dedicated cluster handshake and is not valid on the local socket; no unauthenticated payload is decoded beyond its fixed maximum.
 
 ## Ownership Model
 
@@ -43,7 +43,7 @@ Forwarding metadata includes task ID, target node, transfer ID, state, attempt, 
 1. Origin conditionally moves an eligible queued task to `forwarding` and creates a unique `transfer_id`.
 2. Origin sends the task envelope/input references plus transfer ID.
 3. Remote agent idempotently imports it as a foreign task and ACKs only after its configured durability boundary and required object transfer.
-4. Origin conditionally moves `forwarding` → `forwarded` after the matching ACK.
+4. Origin conditionally moves `forwarding` → `forwarded` after the matching response.
 5. Lost responses are retried with the same transfer ID. Conflicting content is rejected.
 
 A crash during any step is recovered from persisted transfer state. Timeouts return uncertain transfers to reconciliation, not immediately to two runnable queues.
@@ -59,7 +59,7 @@ A crash during any step is recovered from persisted transfer state. Timeouts ret
 
 The remote agent grants and fences the worker lease locally. On completion it records the foreign terminal attempt, then sends the origin a completion containing task ID, transfer ID, lease/attempt diagnostics, result reference/failure, and any required object bytes/reference mapping.
 
-The origin accepts the first valid completion for the active transfer, atomically records its terminal result record/cursor, and notifies its Runtime. Duplicate completions are idempotent. The origin ACK causes the remote agent to retire its foreign record after retention. Runtime replay remains owner/cursor based and unchanged from Phase 4.
+The origin accepts the first valid completion for the active transfer, atomically records its terminal result record/cursor, and notifies its Runtime. Duplicate completions are idempotent. The origin's response causes the remote agent to retire its foreign record after retention. Runtime replay remains owner/cursor based and unchanged from Phase 4.
 
 If a remote node is suspected or unreachable, the origin reconciles the transfer and may make the task eligible again after a bounded ownership timeout. The original remote attempt can still finish, so duplicates are allowed. A late completion cannot overwrite an origin-accepted terminal state.
 
@@ -82,7 +82,7 @@ harness/cluster.py
 harness/proxy.py
 ```
 
-Phase 5 implements the cluster authentication, replay, transfer, ownership, and steal limits already frozen in the Phase 1 configuration. It does not alter the Phase 1 base frame or message schemas.
+Phase 5 implements the cluster authentication, replay, transfer, ownership, and steal limits already frozen in the Phase 1 configuration. It does not alter the Phase 1 service or message schemas.
 
 ## Required Tests
 
@@ -90,12 +90,12 @@ Phase 5 implements the cluster authentication, replay, transfer, ownership, and 
 - Eventual membership convergence uses polling with deadlines, never fixed sleeps.
 - Matching/nonmatching label routing and local fallback.
 - Concurrent stealers cannot acquire the same queued task; forwarded tasks never re-forward.
-- Crash before/after import ACK and before/after origin transition recovers without conservation loss.
+- Crash before/after the import response and before/after origin transition recovers without conservation loss.
 - Origin restart recovers forwarding/forwarded state from SQLite.
 - Local filesystem objects copy correctly; corrupt/truncated transfers never become claimable.
 - Remote completion/result object reaches only the origin owner and replays after Runtime reconnect.
 - Symmetric/asymmetric partition, node death, flapping, and heal scenarios prove acknowledged-task conservation, bounded completion, agent survival, no leaked workers/transfers/objects, and accounting equality. Every duplicate must be attributable to a recorded ownership timeout or lease expiry.
-- Shadow/foreign records and temporary objects remain bounded and are cleaned after ACK/retention.
+- Shadow/foreign records and temporary objects remain bounded and are cleaned after acknowledgement/retention.
 
 ## Implementation Order
 
@@ -115,7 +115,7 @@ Phase 5 is complete when authenticated multi-node chaos tests demonstrate task c
 ## Implementation Guide
 
 > **Gate:** Post-MVP. Start only after Phase 4 review passes. Do not change Phase 1
-> base frames; use `forwarded` flag + existing `ForwardedTask` / `ForwardedCompletion`.
+> base service; use the existing `ForwardTask` / `ForwardCompletion` RPCs.
 
 ### File map
 
@@ -159,7 +159,7 @@ type TransferRecord struct {
 ### Auth handshake (task channel only)
 
 ```go
-// preface before any Phase 1 frame on cluster task port
+// handshake before any Phase 1 cluster RPC on the cluster task port
 // AUTH_CHALLENGE {node_name, nonce[32], unix_ms}
 // AUTH_RESPONSE  {node_name, peer_nonce[32], nonce[32], unix_ms, mac[32]}
 // mac = HMAC-SHA256(key, version || name1 || name2 || nonces || timestamps)
@@ -173,7 +173,7 @@ func (o *Origin) Forward(ctx context.Context, task TaskRecord, target string) er
 	// 1. tx: queued → forwarding, new transfer_id
 	// 2. ensure remote has objects (copy filesystem refs if needed)
 	// 3. send SUBMIT with forwarded flag + ForwardedTask
-	// 4. on durable ACK: forwarding → forwarded
+	// 4. on durable response: forwarding → forwarded
 	// 5. on timeout: reconcile; do NOT immediately double-queue
 }
 ```
@@ -183,12 +183,12 @@ func (o *Origin) Forward(ctx context.Context, task TaskRecord, target string) er
 ```go
 func (r *Remote) ImportForwarded(ft *pb.ForwardedTask) error {
 	// idempotent by task_id+transfer_id; durable Create foreign row
-	// ACK only after durability + required objects present
+	// respond only after durability + required objects present
 }
 
 func (r *Remote) OnLocalComplete(taskID, leaseID, transferID, result) error {
 	// fence local lease; send origin ForwardedCompletion
-	// retire foreign after origin ACK + retention
+	// retire foreign after the origin's response + retention
 }
 ```
 

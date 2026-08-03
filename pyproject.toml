@@ -35,6 +35,8 @@ cloudpickle = "^3.0"
 pyyaml = "^6.0"
 msgpack = "^1.0"
 protobuf = ">=6.33.5,<7"
+grpcio = "^1.83"
+grpcio-status = "^1.83"
 confluent-kafka = {version = "^2.5", optional = true}
 
 [tool.poetry.extras]
@@ -59,6 +61,16 @@ markers = [
 
 [tool.ruff]
 extend-exclude = ["python/taskwire/protocol/pb"]
+# Matches [tool.poetry.dependencies] python = ">=3.11". Without this, ruff
+# assumes an older target and misclassifies stdlib modules added in 3.11
+# (notably tomllib) as third-party imports.
+target-version = "py311"
+
+# `taskwire` and `harness` live under python/ and the repo root rather than
+# beside pyproject.toml, so tell isort they are first-party; otherwise it sorts
+# the installed package into the third-party block.
+[tool.ruff.lint.isort]
+known-first-party = ["taskwire", "harness"]
 
 [tool.poetry.urls]
 homepage = "https://github.com/sanketn26/taskwire"

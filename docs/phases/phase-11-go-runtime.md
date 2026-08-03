@@ -39,7 +39,7 @@ restart.
   types. Unsupported Go kinds, architecture-sized overflow, cyclic values,
   non-string map keys, and implicit custom marshaling are rejected unless the
   application explicitly selects `bytes` and owns that schema.
-- Load the complete registry, send worker HELLO and generation 1 registration,
+- Load the complete registry, open the Work stream with generation 1 registration,
   then PULL. Reconnect republishes capabilities before claiming.
 - Handler contexts are cancelled on shutdown, cancellation, or detected lease
   loss. Context cancellation is cooperative; the active lease still fences late
@@ -66,7 +66,7 @@ sdk/go/taskwire/*_test.go
 - Register alongside synthetic Python and Node.js workers; capability and label
   filtering choose only compatible implementations.
 - Execute success, returned error, panic, object-backed input/result, heartbeat,
-  context cancellation, lost lease, worker crash/restart, and lost COMPLETE ACK.
+  context cancellation, lost lease, worker crash/restart, and lost completion response.
 - Cover signed/unsigned 64-bit boundaries, pointer/nil behavior, struct field
   mapping, binary values, and rejection of unsupported Go values.
 - Run protocol/SDK unit tests with `go test -race`; malformed and oversized input
@@ -151,7 +151,7 @@ out, err := h.Wait(ctx) // or WaitTimeout
 ### Worker loop (same as Phase 3 contract)
 
 ```go
-// HELLO runtime=go → REGISTER_TASKS → PULL
+// Work stream: WorkerRegistration(runtime=go) → register → pull
 // heartbeat on lease; ctx cancel on shutdown/lease loss (cooperative)
 // recover panic → Failure{code: task_exception} (do not hide registry/startup panics)
 // COMPLETE fenced; stale_lease → stop
@@ -180,7 +180,7 @@ cd sdk/go/taskwire && go test -race ./...
 - [ ] External module import works  
 - [ ] Interchangeable portable task with Python  
 - [ ] Client replay/reattach  
-- [ ] `-race` green; no unbounded alloc on bad frames  
+- [ ] `-race` green; no unbounded alloc on bad messages  
 - [ ] No wire/schema changes  
 
 ### Review request

@@ -43,32 +43,32 @@ python/tests/integration/test_sdk_e2e.py
 
 Thread-safe terminal states are result, task failure, cancelled, submission failure, connection failure, and Runtime shutdown. Only the first terminal transition wins. Public methods are `result(timeout=None)`, `exception(timeout=None)`, `done()`, `cancel()`, `cancelled()`, `task_id`, and `owner_id`.
 
-`result()` timeout raises `TimeoutError` without changing task state. `cancel()` sends a request and returns true only for the agent's successful queued-state transition. Duplicate/out-of-order RESULT frames are harmless. Future completion callbacks are not part of the v0.1 public API.
+`result()` timeout raises `TimeoutError` without changing task state. `cancel()` sends a request and returns true only for the agent's successful queued-state transition. Duplicate/out-of-order result notifications are harmless. Future completion callbacks are not part of the v0.1 public API.
 
 ## Runtime Identity and Connection
 
-Runtime owns a random persistent 16-byte `owner_id`. Callers may pass a previously persisted owner ID to resume after process restart; it is a bearer capability and must not be logged at info level. The Runtime registers with `HELLO(role="runtime", owner_id=...)` before any owner-scoped request and maintains:
+Runtime owns a random persistent 16-byte `owner_id`. Callers may pass a previously persisted owner ID to resume after process restart; it is a bearer capability and must not be logged at info level. The Runtime attaches `taskwire-role: runtime` and its hex-encoded `taskwire-owner-id` to every RPC and maintains:
 
-- `_submitting`: task IDs awaiting SUBMIT ACK.
+- `_submitting`: task IDs awaiting a `Submit` response.
 - `_pending`: ACKed task IDs with live Futures.
 - `_cursor`: highest contiguously handled result cursor.
 - one serialized writer and one continuously reading dispatcher.
 
-On connect/reconnect, send `RESUME_RESULTS(owner_id, after_cursor, batch_size)`, process results in cursor order, and ACK each result only after its Future reaches the corresponding terminal state. Unknown task IDs may be retained as reattachable terminal records rather than discarded; bounded retention follows agent policy.
+On connect/reconnect, open `WatchResults(owner_id, after_cursor)`, process notifications in cursor order, and call `AckResult` only after each Future reaches the corresponding terminal state. Unknown task IDs may be retained as reattachable terminal records rather than discarded; bounded retention follows agent policy.
 
 ### Submission ordering
 
 1. Allocate task ID and install its Future in `_submitting` before writing.
 2. Serialize the single portable input for `value`, or the canonical `{args, kwargs}` adapter payload for `python_args`. Inline values above the threshold are uploaded through the agent and replaced with `ObjectRef`.
 3. Send `SUBMIT` with owner, registered identity, labels, and value reference.
-4. Wait at most `ipc.submit_ack_timeout_ms` for typed ACK/ERROR.
-5. Move to `_pending` only on ACK. Timeout, rejection, disconnect, or partial write terminalizes and removes the Future; no pending entry leaks.
+4. Wait at most `ipc.submit_ack_timeout_ms` for the `Submit` response or error status.
+5. Move to `_pending` only on a successful response. Timeout, rejection, or disconnect terminalizes and removes the Future; no pending entry leaks.
 
 An unACKed submission has unknown acceptance and is not automatically retried with a new task ID. Retrying the same task ID/envelope is safe because agent creation is idempotent.
 
 ### Result handling
 
-Fetch and checksum-verify an object-backed result, then deserialize it. Deserialization failure terminalizes that Future with `TaskExecutionError`; it must not terminate the dispatcher. Failures and cancellation map to stable SDK exceptions. ACK only after recording the terminal transition. On ACK loss the agent replays; first-terminal-wins makes this safe.
+Fetch and checksum-verify an object-backed result, then deserialize it. Deserialization failure terminalizes that Future with `TaskExecutionError`; it must not terminate the dispatcher. Failures and cancellation map to stable SDK exceptions. Call `AckResult` only after recording the terminal transition. On ack loss the agent replays; first-terminal-wins makes this safe.
 
 ### Reattach
 
@@ -93,10 +93,10 @@ Pure Python is mandatory. Native acceleration may optimize framing/heartbeat onl
 - Decorator validation, registry collision, stable name/version, and inline-mode rejection.
 - Portable `value` submissions match the shared conformance bytes; `python_args` and cloudpickle registrations are marked Python-only and cannot be leased to synthetic Node.js/Go capabilities.
 - Future first-terminal-wins, timeout, cancellation race, callback isolation, and thread safety.
-- Disconnect before ACK leaves no Future leak and reports unknown acceptance clearly.
+- Disconnect before the `Submit` response leaves no Future leak and reports unknown acceptance clearly.
 - ACKed submit survives Runtime disconnect; reconnect with owner/cursor resolves it.
-- HELLO registration and same-owner connection replacement preserve result replay without delivering new notifications to the superseded connection.
-- Disconnect after RESULT before ACK causes replay and only one resolution.
+- Owner metadata and same-owner stream replacement preserve result replay without delivering new notifications to the superseded stream.
+- Disconnect after a notification but before `AckResult` causes replay and only one resolution.
 - Duplicate, out-of-order, malformed, corrupt-object, and deserialization-failure results do not kill the dispatcher.
 - Large arguments/results cross the object threshold; explicit `ObjectRef` is preserved.
 - Concurrent submit/result/cancel stress test under the SQLite/filesystem defaults.
@@ -107,7 +107,7 @@ Pure Python is mandatory. Native acceleration may optimize framing/heartbeat onl
 ## Implementation Order
 
 1. `TaskDefinition`, decorator, registry, and Future state machine.
-2. Runtime connection/dispatcher and strict SUBMIT ACK lifecycle.
+2. Runtime connection/dispatcher and strict `Submit` response lifecycle.
 3. Object upload/download and result mapping.
 4. Reconnect, cursor replay, reattach, cancellation, and shutdown.
 5. Extend the existing clean-wheel smoke test to SDK E2E and add seeded chaos scenarios without bypassing packaged agent discovery.
@@ -308,8 +308,7 @@ class Runtime:
 
     def connect(self) -> None:
         # resolve socket from config or find_agent_binary + external agent
-        # HELLO runtime
-        # RESUME_RESULTS(owner, after_cursor=self._cursor, limit=batch)
+        # WatchResults(owner, after_cursor=self._cursor)
         ...
 
     def submit(self, defn: TaskDefinition, *args, **kwargs) -> TaskFuture:
@@ -351,7 +350,7 @@ class Runtime:
 def _on_result(self, note: ResultNotification) -> None:
     fut = self._pending.get(note.task_id)
     # map state → set_result / set_exception
-    # only after Future terminal: ACK result (owner, task_id, cursor)
+    # only after Future terminal: AckResult(owner, task_id, cursor)
     # advance _cursor contiguously
 ```
 
@@ -417,7 +416,7 @@ Extend `Makefile` `smoke-wheel` to run a registered task E2E with repo not impor
 ### Done checklist
 
 - [ ] `@task` requires name/version; invocation value vs python_args enforced  
-- [ ] SUBMIT ACK timeout bounds; no `_pending` leak on failure  
+- [ ] `Submit` response timeout bounds; no `_pending` leak on failure  
 - [ ] Future first-terminal-wins; `result(timeout)` does not cancel  
 - [ ] Cancel returns True only when agent queued-cancel succeeds  
 - [ ] Reconnect + reattach without Kafka  

@@ -7,120 +7,74 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// ConnectionState is the mutable per-connection state owned by the
-// caller (one per socket).
+// ConnectionState is the mutable per-stream state owned by the caller (one
+// per Work stream). Role authorization and request correlation live in the
+// gRPC layer, so this tracks only worker identity and capabilities.
 type ConnectionState struct {
 	Registered            bool
-	Role                  string
-	OwnerID               []byte
 	WorkerID              string
 	Runtime               string
 	Codecs                map[string]bool
 	CapabilityGeneration  uint64
 	CapabilityFingerprint []byte
-	InFlightRequestIDs    map[uint64]bool
 }
 
 // NewConnectionState returns a fresh, unregistered connection state.
 func NewConnectionState() *ConnectionState {
-	return &ConnectionState{InFlightRequestIDs: make(map[uint64]bool)}
+	return &ConnectionState{}
 }
 
-// ResetRequestNamespace clears in-flight request IDs on reconnect.
-func (s *ConnectionState) ResetRequestNamespace() {
-	s.InFlightRequestIDs = make(map[uint64]bool)
-}
-
-var runtimeMessages = map[MessageType]bool{
-	MessageSubmit: true, MessageCancel: true, MessageResumeResults: true,
-	MessageTaskQuery: true, MessageAck: true,
-}
-
-var workerMessages = map[MessageType]bool{
-	MessageRegisterTasks: true, MessagePull: true, MessageHeartbeat: true, MessageComplete: true,
-}
-
-var adminMessages = map[MessageType]bool{
-	MessageStatus: true,
-}
-
-func roleMessages(role string) map[MessageType]bool {
-	switch role {
-	case "runtime":
-		return runtimeMessages
-	case "worker":
-		return workerMessages
-	case "admin":
-		return adminMessages
-	default:
-		return nil
-	}
-}
-
-// Session is a pure state machine for one connection: no sockets. All
-// methods take the current ConnectionState explicitly, mutate it in
-// place, and return a *DecodeError the caller turns into an ERROR frame.
+// Session is a pure state machine for one worker stream: no sockets. All
+// methods take the current ConnectionState explicitly, mutate it in place,
+// and return a *ProtocolError the caller turns into a gRPC status.
 type Session struct{}
 
-// Register records a successful HELLO.
-func (Session) Register(state *ConnectionState, role string, ownerID []byte, workerID string) {
+// RegisterWorker records a validated worker registration, including its
+// initial capability set.
+func (s Session) RegisterWorker(state *ConnectionState, registration *WorkerRegistration) error {
+	if err := Validate(registration); err != nil {
+		return err
+	}
 	state.Registered = true
-	state.Role = role
-	state.OwnerID = ownerID
-	state.WorkerID = workerID
-}
-
-func (Session) RegisterWorker(state *ConnectionState, hello *Hello) {
-	state.Registered = true
-	state.Role = "worker"
-	state.WorkerID = hello.WorkerId
-	state.Runtime = hello.Runtime
-	state.Codecs = make(map[string]bool, len(hello.Codecs))
-	for _, codec := range hello.Codecs {
+	state.WorkerID = registration.WorkerId
+	state.Runtime = registration.Runtime
+	state.Codecs = make(map[string]bool, len(registration.Codecs))
+	for _, codec := range registration.Codecs {
 		state.Codecs[codec] = true
 	}
 	state.CapabilityGeneration = 0
 	state.CapabilityFingerprint = nil
+	return s.RegisterTasks(state, registration.Tasks)
 }
 
-// Authorize checks that messageType is permitted for state's role, and
-// that HELLO has already been sent for anything but HELLO itself.
-func (Session) Authorize(state *ConnectionState, messageType MessageType) error {
-	if messageType == MessageHello {
-		return nil
-	}
-	if !state.Registered {
-		return NewDecodeError(NotRegistered, "connection has not sent HELLO")
-	}
-	allowed := roleMessages(state.Role)
-	if !allowed[messageType] {
-		return NewDecodeError(RoleForbidden, "role "+state.Role+" may not send "+messageType.String())
-	}
-	if state.Role == "worker" && messageType == MessagePull && state.CapabilityGeneration == 0 {
-		return NewDecodeError(NotRegistered, "worker has not registered task capabilities")
-	}
-	return nil
-}
-
+// RegisterTasks atomically replaces the stream's capability set. A repeated
+// generation with identical content is idempotent; an older or conflicting
+// generation is task_conflict.
 func (Session) RegisterTasks(state *ConnectionState, registration *TaskRegistration) error {
-	if state.Role != "worker" {
-		return NewDecodeError(RoleForbidden, "only workers register tasks")
+	if !state.Registered {
+		return NewProtocolError(NotRegistered, "worker has not registered")
+	}
+	if registration == nil {
+		return NewProtocolError(InvalidMessage, "task registration is required")
+	}
+	if err := Validate(registration); err != nil {
+		return err
 	}
 	if registration.WorkerId != state.WorkerID {
-		return NewDecodeError(OwnerMismatch, "worker_id does not match HELLO")
+		return NewProtocolError(OwnerMismatch, "worker_id does not match registration")
 	}
 	for _, task := range registration.Tasks {
 		for _, codec := range task.Codecs {
 			if !state.Codecs[codec] {
-				return NewDecodeError(TaskConflict, "task codec absent from HELLO")
+				return NewProtocolError(TaskConflict, "task codec absent from worker registration")
 			}
 			if state.Runtime != "python" && (task.Invocation == "python_args" || codec == "cloudpickle") {
-				return NewDecodeError(TaskConflict, "runtime cannot provide Python-only capability")
+				return NewProtocolError(TaskConflict, "runtime cannot provide Python-only capability")
 			}
 		}
 	}
 	if registration.Generation < state.CapabilityGeneration {
-		return NewDecodeError(TaskConflict, "stale capability generation")
+		return NewProtocolError(TaskConflict, "stale capability generation")
 	}
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(registration)
 	if err != nil {
@@ -131,43 +85,24 @@ func (Session) RegisterTasks(state *ConnectionState, registration *TaskRegistrat
 		if bytes.Equal(fingerprint[:], state.CapabilityFingerprint) {
 			return nil
 		}
-		return NewDecodeError(TaskConflict, "conflicting capability generation")
+		return NewProtocolError(TaskConflict, "conflicting capability generation")
 	}
 	state.CapabilityGeneration = registration.Generation
 	state.CapabilityFingerprint = append([]byte(nil), fingerprint[:]...)
 	return nil
 }
 
-// BeginRequest registers a nonzero request ID as in flight; rejects reuse.
-func (Session) BeginRequest(state *ConnectionState, requestID uint64) error {
-	if requestID == 0 {
-		return nil
-	}
-	if state.InFlightRequestIDs[requestID] {
-		return NewDecodeError(DuplicateRequest, "request id already in flight")
-	}
-	state.InFlightRequestIDs[requestID] = true
-	return nil
-}
-
-// CompleteRequest frees a request ID once its response has been sent.
-func (Session) CompleteRequest(state *ConnectionState, requestID uint64) {
-	delete(state.InFlightRequestIDs, requestID)
-}
-
-// CheckOwner verifies ownerID matches the connection's registered owner.
-func (Session) CheckOwner(state *ConnectionState, ownerID []byte) error {
-	if string(state.OwnerID) != string(ownerID) {
-		return NewDecodeError(OwnerMismatch, "owner_id does not match registered owner")
+// CheckOwner verifies ownerID matches the caller's authenticated owner.
+func (Session) CheckOwner(caller CallerIdentity, ownerID []byte) error {
+	if !bytes.Equal(caller.OwnerID, ownerID) {
+		return NewProtocolError(OwnerMismatch, "owner_id does not match authenticated owner")
 	}
 	return nil
 }
 
-// OwnerRegistry tracks which connection is primary for each owner ID. A
-// newer connection for the same owner becomes primary once its resume
-// begins; the caller detects "resume begins" and calls Promote. The old
-// connection may finish in-flight responses but stops receiving new
-// notifications once replaced.
+// OwnerRegistry tracks which WatchResults stream is primary for each owner
+// ID. A newer stream for the same owner becomes primary once it opens; the
+// old stream stops receiving new notifications.
 type OwnerRegistry struct {
 	primary map[string]interface{}
 }
@@ -176,22 +111,22 @@ func NewOwnerRegistry() *OwnerRegistry {
 	return &OwnerRegistry{primary: make(map[string]interface{})}
 }
 
-// Promote makes connectionKey primary for ownerID and returns the
-// previous primary connection key, or nil if there wasn't one.
-func (r *OwnerRegistry) Promote(ownerID []byte, connectionKey interface{}) interface{} {
+// Promote makes streamKey primary for ownerID and returns the previous
+// primary stream key, or nil if there wasn't one.
+func (r *OwnerRegistry) Promote(ownerID []byte, streamKey interface{}) interface{} {
 	key := string(ownerID)
 	previous := r.primary[key]
-	r.primary[key] = connectionKey
+	r.primary[key] = streamKey
 	return previous
 }
 
-func (r *OwnerRegistry) IsPrimary(ownerID []byte, connectionKey interface{}) bool {
-	return r.primary[string(ownerID)] == connectionKey
+func (r *OwnerRegistry) IsPrimary(ownerID []byte, streamKey interface{}) bool {
+	return r.primary[string(ownerID)] == streamKey
 }
 
-func (r *OwnerRegistry) Remove(ownerID []byte, connectionKey interface{}) {
+func (r *OwnerRegistry) Remove(ownerID []byte, streamKey interface{}) {
 	key := string(ownerID)
-	if r.primary[key] == connectionKey {
+	if r.primary[key] == streamKey {
 		delete(r.primary, key)
 	}
 }

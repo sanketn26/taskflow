@@ -1,5 +1,5 @@
 .PHONY: all format lint unit integration build-agent build-sdk wheel smoke-wheel \
-	test bench clean agent-run help
+	test bench clean agent-run proto help
 
 REPO_ROOT := $(shell git rev-parse --show-toplevel 2>/dev/null || pwd)
 VERSION   := $(shell grep -m1 '^version' $(REPO_ROOT)/pyproject.toml | cut -d'"' -f2)
@@ -20,6 +20,28 @@ help:
 	@echo "  bench          Run benchmarks"
 	@echo "  clean          Remove build artifacts"
 	@echo "  agent-run      Run the agent with example config"
+	@echo "  proto          Regenerate Go and Python bindings from control.proto"
+
+# --- Protocol codegen -------------------------------------------------------
+
+# Bindings are committed, so this is only needed after editing control.proto.
+# Requires protoc-gen-go, protoc-gen-go-grpc (go install) and grpcio-tools (pip).
+proto:
+	cd $(REPO_ROOT) && $(PYTHON) -m grpc_tools.protoc -I proto \
+		--go_out=. --go_opt=module=github.com/sanketn26/taskwire \
+		--go-grpc_out=. --go-grpc_opt=module=github.com/sanketn26/taskwire \
+		proto/taskwire/v1/control.proto
+	cd $(REPO_ROOT) && $(PYTHON) -m grpc_tools.protoc -I proto \
+		--python_out=python/taskwire/protocol/pb \
+		--pyi_out=python/taskwire/protocol/pb \
+		--grpc_python_out=python/taskwire/protocol/pb \
+		proto/taskwire/v1/control.proto
+	cd $(REPO_ROOT)/python/taskwire/protocol/pb && \
+		mv taskwire/v1/control_pb2.py taskwire/v1/control_pb2.pyi \
+		   taskwire/v1/control_pb2_grpc.py . && \
+		rm -rf taskwire && \
+		sed -i 's/^from taskwire\.v1 import/from taskwire.protocol.pb import/' \
+			control_pb2_grpc.py
 
 # --- Agent (Go) -------------------------------------------------------------
 

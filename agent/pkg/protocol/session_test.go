@@ -1,143 +1,215 @@
 package protocol
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"testing"
 
-var owner = []byte{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
-var otherOwner = []byte{2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2}
+	"google.golang.org/grpc/metadata"
+)
 
-func TestHelloFirstRequired(t *testing.T) {
-	s := Session{}
-	state := NewConnectionState()
-	err := s.Authorize(state, MessageSubmit)
-	de, ok := err.(*DecodeError)
-	if !ok || de.Code != NotRegistered {
-		t.Fatalf("got %v, want not_registered", err)
-	}
-	if err := s.Authorize(state, MessageHello); err != nil {
-		t.Fatalf("HELLO should always be allowed: %v", err)
+func workerRegistration(workerID, runtime string, codecs []string, generation uint64, tasks []*TaskCapability) *WorkerRegistration {
+	return &WorkerRegistration{
+		WorkerId: workerID, Runtime: runtime, RuntimeVersion: "1", SdkVersion: "0.1.0",
+		Codecs: codecs,
+		Tasks:  &TaskRegistration{WorkerId: workerID, Generation: generation, Tasks: tasks},
 	}
 }
 
-func TestRoleMatrix(t *testing.T) {
-	cases := []struct {
-		role      string
-		allowed   MessageType
-		forbidden MessageType
-	}{
-		{"runtime", MessageSubmit, MessagePull},
-		{"worker", MessageRegisterTasks, MessageSubmit},
-		{"admin", MessageStatus, MessageSubmit},
-	}
-	for _, c := range cases {
-		s := Session{}
-		state := NewConnectionState()
-		var ownerID []byte
-		var workerID string
-		if c.role == "runtime" {
-			ownerID = owner
-		}
-		if c.role == "worker" {
-			workerID = "w"
-		}
-		s.Register(state, c.role, ownerID, workerID)
-
-		if err := s.Authorize(state, c.allowed); err != nil {
-			t.Errorf("role=%s: unexpected error for allowed type: %v", c.role, err)
-		}
-		err := s.Authorize(state, c.forbidden)
-		de, ok := err.(*DecodeError)
-		if !ok || de.Code != RoleForbidden {
-			t.Errorf("role=%s: got %v, want role_forbidden", c.role, err)
-		}
-	}
-}
-
-func TestDuplicateInFlightRequestRejected(t *testing.T) {
+func TestRegisterWorkerEstablishesCapabilities(t *testing.T) {
 	s := Session{}
 	state := NewConnectionState()
-	if err := s.BeginRequest(state, 5); err != nil {
+	registration := workerRegistration("w", "python", []string{"msgpack"}, 1,
+		[]*TaskCapability{{TaskName: "a", TaskVersion: "1", Invocation: "value", Codecs: []string{"msgpack"}}})
+
+	if err := s.RegisterWorker(state, registration); err != nil {
 		t.Fatal(err)
 	}
-	err := s.BeginRequest(state, 5)
-	de, ok := err.(*DecodeError)
-	if !ok || de.Code != DuplicateRequest {
-		t.Fatalf("got %v, want duplicate_request", err)
+	if !state.Registered || state.WorkerID != "w" || state.CapabilityGeneration != 1 {
+		t.Fatalf("registration did not establish state: %+v", state)
+	}
+}
+
+func TestRegisterTasksBeforeRegistrationRejected(t *testing.T) {
+	s := Session{}
+	state := NewConnectionState()
+	err := s.RegisterTasks(state, &TaskRegistration{WorkerId: "w", Generation: 1})
+	pe, ok := err.(*ProtocolError)
+	if !ok || pe.Code != NotRegistered {
+		t.Fatalf("got %v, want not_registered", err)
 	}
 }
 
 func TestCapabilityFingerprintIsDerivedFromRegistration(t *testing.T) {
 	s := Session{}
 	state := NewConnectionState()
-	s.RegisterWorker(state, &Hello{Role: "worker", WorkerId: "w", Runtime: "nodejs", RuntimeVersion: "22", SdkVersion: "0.1.0", Codecs: []string{"msgpack"}})
-	first := &TaskRegistration{WorkerId: "w", Generation: 1, Tasks: []*TaskCapability{{TaskName: "a", TaskVersion: "1", Invocation: "value", Codecs: []string{"msgpack"}}}}
-	if err := s.RegisterTasks(state, first); err != nil {
+	tasks := []*TaskCapability{{TaskName: "a", TaskVersion: "1", Invocation: "value", Codecs: []string{"msgpack"}}}
+	if err := s.RegisterWorker(state, workerRegistration("w", "nodejs", []string{"msgpack"}, 1, tasks)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterTasks(state, first); err != nil {
+
+	same := &TaskRegistration{WorkerId: "w", Generation: 1, Tasks: tasks}
+	if err := s.RegisterTasks(state, same); err != nil {
 		t.Fatalf("identical registration should be idempotent: %v", err)
 	}
-	changed := &TaskRegistration{WorkerId: "w", Generation: 1, Tasks: []*TaskCapability{{TaskName: "b", TaskVersion: "1", Invocation: "value", Codecs: []string{"msgpack"}}}}
+
+	changed := &TaskRegistration{WorkerId: "w", Generation: 1, Tasks: []*TaskCapability{
+		{TaskName: "b", TaskVersion: "1", Invocation: "value", Codecs: []string{"msgpack"}},
+	}}
 	if err := s.RegisterTasks(state, changed); err == nil {
 		t.Fatal("changed registration with same generation must conflict")
 	}
 }
 
-func TestCompletionFreesRequestID(t *testing.T) {
+func TestPythonOnlyCapabilityRejectedForOtherRuntimes(t *testing.T) {
 	s := Session{}
 	state := NewConnectionState()
-	_ = s.BeginRequest(state, 5)
-	s.CompleteRequest(state, 5)
-	if err := s.BeginRequest(state, 5); err != nil {
-		t.Fatalf("unexpected error after completion freed the id: %v", err)
+	registration := workerRegistration("w", "go", []string{"cloudpickle"}, 1,
+		[]*TaskCapability{{TaskName: "a", TaskVersion: "1", Invocation: "value", Codecs: []string{"cloudpickle"}}})
+
+	err := s.RegisterWorker(state, registration)
+	pe, ok := err.(*ProtocolError)
+	if !ok || pe.Code != TaskConflict {
+		t.Fatalf("got %v, want task_conflict", err)
 	}
 }
 
-func TestZeroRequestIDNeverTracked(t *testing.T) {
+func TestStaleGenerationRejected(t *testing.T) {
 	s := Session{}
 	state := NewConnectionState()
-	_ = s.BeginRequest(state, 0)
-	if err := s.BeginRequest(state, 0); err != nil {
-		t.Fatalf("request id 0 must never be tracked: %v", err)
+	if err := s.RegisterWorker(state, workerRegistration("w", "python", []string{"msgpack"}, 5, nil)); err != nil {
+		t.Fatal(err)
+	}
+	err := s.RegisterTasks(state, &TaskRegistration{WorkerId: "w", Generation: 2})
+	pe, ok := err.(*ProtocolError)
+	if !ok || pe.Code != TaskConflict {
+		t.Fatalf("got %v, want task_conflict", err)
 	}
 }
 
-func TestReconnectResetsRequestNamespace(t *testing.T) {
+func TestWorkerIDMustMatchRegistration(t *testing.T) {
 	s := Session{}
 	state := NewConnectionState()
-	_ = s.BeginRequest(state, 5)
-	state.ResetRequestNamespace()
-	if err := s.BeginRequest(state, 5); err != nil {
-		t.Fatalf("unexpected error after reset: %v", err)
+	if err := s.RegisterWorker(state, workerRegistration("w", "python", []string{"msgpack"}, 1, nil)); err != nil {
+		t.Fatal(err)
+	}
+	err := s.RegisterTasks(state, &TaskRegistration{WorkerId: "other", Generation: 2})
+	pe, ok := err.(*ProtocolError)
+	if !ok || pe.Code != OwnerMismatch {
+		t.Fatalf("got %v, want owner_mismatch", err)
 	}
 }
 
 func TestOwnerMismatchRejected(t *testing.T) {
 	s := Session{}
-	state := NewConnectionState()
-	s.Register(state, "runtime", owner, "")
-	err := s.CheckOwner(state, otherOwner)
-	de, ok := err.(*DecodeError)
-	if !ok || de.Code != OwnerMismatch {
-		t.Fatalf("got %v, want owner_mismatch", err)
+	caller := CallerIdentity{Role: RoleRuntime, OwnerID: bytes.Repeat([]byte{1}, 16)}
+	if err := s.CheckOwner(caller, caller.OwnerID); err != nil {
+		t.Fatalf("matching owner rejected: %v", err)
 	}
-	if err := s.CheckOwner(state, owner); err != nil {
-		t.Fatalf("unexpected error for matching owner: %v", err)
+	err := s.CheckOwner(caller, bytes.Repeat([]byte{2}, 16))
+	pe, ok := err.(*ProtocolError)
+	if !ok || pe.Code != OwnerMismatch {
+		t.Fatalf("got %v, want owner_mismatch", err)
 	}
 }
 
-func TestOwnerRegistryPromotesNewestConnection(t *testing.T) {
-	r := NewOwnerRegistry()
-	if prev := r.Promote(owner, "conn-1"); prev != nil {
-		t.Fatalf("expected nil previous, got %v", prev)
+func TestOwnerRegistryPromotesNewestStream(t *testing.T) {
+	registry := NewOwnerRegistry()
+	ownerID := bytes.Repeat([]byte{7}, 16)
+	first, second := "stream-1", "stream-2"
+
+	if previous := registry.Promote(ownerID, first); previous != nil {
+		t.Fatalf("unexpected previous primary: %v", previous)
 	}
-	if !r.IsPrimary(owner, "conn-1") {
-		t.Fatal("conn-1 should be primary")
+	previous := registry.Promote(ownerID, second)
+	if previous != first {
+		t.Fatalf("got previous %v, want %v", previous, first)
 	}
-	prev := r.Promote(owner, "conn-2")
-	if prev != "conn-1" {
-		t.Fatalf("got %v, want conn-1", prev)
+	if registry.IsPrimary(ownerID, first) {
+		t.Fatal("replaced stream is still primary")
 	}
-	if r.IsPrimary(owner, "conn-1") {
-		t.Fatal("conn-1 should no longer be primary")
+	if !registry.IsPrimary(ownerID, second) {
+		t.Fatal("newest stream is not primary")
+	}
+
+	registry.Remove(ownerID, second)
+	if registry.IsPrimary(ownerID, second) {
+		t.Fatal("removed stream is still primary")
+	}
+}
+
+// --- Role authorization (gRPC metadata) --------------------------------
+
+func callerContext(pairs ...string) context.Context {
+	return metadata.NewIncomingContext(context.Background(), metadata.Pairs(pairs...))
+}
+
+func TestRoleMatrix(t *testing.T) {
+	ownerHex := "000102030405060708090a0b0c0d0e0f"
+	cases := []struct {
+		name    string
+		role    string
+		method  string
+		allowed bool
+	}{
+		{"runtime submits", RoleRuntime, "/taskwire.v1.TaskwireControl/Submit", true},
+		{"runtime may not work", RoleRuntime, "/taskwire.v1.TaskwireControl/Work", false},
+		{"worker works", RoleWorker, "/taskwire.v1.TaskwireControl/Work", true},
+		{"worker may not submit", RoleWorker, "/taskwire.v1.TaskwireControl/Submit", false},
+		{"admin reads status", RoleAdmin, "/taskwire.v1.TaskwireControl/Status", true},
+		{"admin may not submit", RoleAdmin, "/taskwire.v1.TaskwireControl/Submit", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := callerContext(MetadataRole, tc.role, MetadataOwnerID, ownerHex)
+			_, err := authorize(ctx, tc.method)
+			if tc.allowed && err != nil {
+				t.Fatalf("role %s should call %s: %v", tc.role, tc.method, err)
+			}
+			if !tc.allowed && err == nil {
+				t.Fatalf("role %s must not call %s", tc.role, tc.method)
+			}
+		})
+	}
+}
+
+func TestMissingRoleMetadataRejected(t *testing.T) {
+	_, err := authorize(context.Background(), "/taskwire.v1.TaskwireControl/Status")
+	if err == nil {
+		t.Fatal("request without metadata accepted")
+	}
+
+	ctx := callerContext("unrelated", "value")
+	if _, err := authorize(ctx, "/taskwire.v1.TaskwireControl/Status"); err == nil {
+		t.Fatal("request without role metadata accepted")
+	}
+}
+
+func TestRuntimeRequiresValidOwnerID(t *testing.T) {
+	ctx := callerContext(MetadataRole, RoleRuntime)
+	if _, err := authorize(ctx, "/taskwire.v1.TaskwireControl/Submit"); err == nil {
+		t.Fatal("runtime without owner_id accepted")
+	}
+
+	ctx = callerContext(MetadataRole, RoleRuntime, MetadataOwnerID, "abcd")
+	if _, err := authorize(ctx, "/taskwire.v1.TaskwireControl/Submit"); err == nil {
+		t.Fatal("runtime with short owner_id accepted")
+	}
+}
+
+func TestAuthorizedCallerIsAttachedToContext(t *testing.T) {
+	ownerHex := "000102030405060708090a0b0c0d0e0f"
+	ctx := callerContext(MetadataRole, RoleRuntime, MetadataOwnerID, ownerHex)
+	authorized, err := authorize(ctx, "/taskwire.v1.TaskwireControl/Submit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller, ok := CallerFrom(authorized)
+	if !ok {
+		t.Fatal("caller identity not attached to context")
+	}
+	if caller.Role != RoleRuntime || len(caller.OwnerID) != 16 {
+		t.Fatalf("unexpected caller identity: %+v", caller)
 	}
 }

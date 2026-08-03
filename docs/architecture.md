@@ -4,21 +4,23 @@ This document is a non-normative orientation guide. All requirements, schemas, f
 
 ## System Shape
 
-Taskwire is a brokerless, at-least-once task system with a language-neutral execution protocol and a Go control plane. The v0.1 Python Runtime submits registered task identities and input references over a local Unix socket to a Go agent. The agent owns transactional task state, leases, immutable objects, capability-aware worker pools, replayable results, and optional clustering/integrations. Python is the first worker runtime; Node.js and Go workers are planned bindings of the same protocol rather than separate schedulers.
+Taskwire is a brokerless, at-least-once task system with a language-neutral execution protocol and a Go control plane. The control plane is **gRPC over a local Unix domain socket**, defined by `proto/taskwire/v1/control.proto`: any language with a gRPC implementation can generate a working client from that file alone. The v0.1 Python Runtime submits registered task identities and input references to a Go agent. The agent owns transactional task state, leases, immutable objects, capability-aware worker pools, replayable results, and optional clustering/integrations. Python is the first worker runtime; Node.js and Go workers are planned bindings of the same service rather than separate schedulers.
 
 ```text
 Python Runtime (v0.1; later Node.js/Go clients)
-      │ local Unix socket: submit, cancel, result replay
+      │ gRPC over Unix socket: Submit, Cancel, WatchResults, QueryTasks
       ▼
 Go agent ───── TaskStateStore (SQLite default)
    │   └────── ObjectStore (filesystem default)
    │
-   ├──── managed worker pools: Python; later Node.js and Go
+   ├──── managed worker pools: Python; later Node.js and Go (Work stream)
    ├──── optional authenticated peer agents
    └──── optional Kafka terminal-event outbox
 ```
 
-Workers never connect to submitting applications. They register runtime, codecs, and exact task name/version capabilities; the agent filters by capability before label routing. Workers read and write objects through their local agent and complete under a fencing lease. Portable tasks use one value encoded with the shared msgpack profile or bytes. Python-specific calling conventions and cloudpickle remain explicit non-portable capabilities. The origin agent commits terminal state before notifying the Runtime. Owner ID plus cursor makes results replayable across connection and Runtime restart until acknowledgement/retention.
+Identity travels in per-RPC metadata (`taskwire-role`, `taskwire-owner-id`) rather than a connection handshake, so a reconnect replays no connection-local state. Errors are gRPC statuses carrying a stable Taskwire error code in the status details.
+
+Workers never connect to submitting applications. They register runtime, codecs, and exact task name/version capabilities on a long-lived `Work` stream; the agent filters by capability before label routing. Stream lifetime bounds lease ownership, so a dropped connection is an unambiguous signal to reap leases. Workers read and write objects through their local agent and complete under a fencing lease. Portable tasks use one value encoded with the shared msgpack profile or bytes. Python-specific calling conventions and cloudpickle remain explicit non-portable capabilities. The origin agent commits terminal state before notifying the Runtime. Owner ID plus cursor makes results replayable: `WatchResults` resumes after the last cursor a Runtime handled, across reconnection and Runtime restart until acknowledgement/retention.
 
 SQLite/filesystem requires no external service. Memory backends are explicitly ephemeral. PostgreSQL/S3 are not supported merely because interfaces leave room for future adapters — that support is Phase 6's own conformance-tested deliverable. Kafka is an optional downstream terminal-event integration, never Runtime result delivery or task completion storage.
 
@@ -27,13 +29,13 @@ SQLite/filesystem requires no external service. Memory backends are explicitly e
 ```text
 serialize/store input
 → durable task Create
-→ SUBMIT ACK
+→ Submit response
 → exclusive Claim + fencing lease
 → execute with heartbeat
 → immutable result Put
 → fenced terminal transaction + result cursor
-→ Runtime RESULT notification
-→ Runtime ACK
+→ WatchResults notification
+→ AckResult
 ```
 
 Execution is at least once, not exactly once. Cancellation succeeds only while queued at the current owner. Cluster partitions and expired leases may create duplicates; terminal writes and remote completions are fenced/idempotent.
