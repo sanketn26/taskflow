@@ -28,7 +28,7 @@ harness/ledger.py
 
 ## Worker Connection
 
-The worker loads its task registry, connects only to the configured local Unix socket, and opens a `Work` stream whose first message is a `WorkerRegistration` carrying identity, codecs, and generation 1 of its capability set. It begins sending `PullRequest` only after the registration response. It receives `LeasedTask`, starts a heartbeat tied to `lease_id`, and uses `PutObject`/`GetObject` to read and write objects. gRPC multiplexes those transfers alongside the `Work` stream on one connection, so no manual request or transfer correlation is needed. Reconnect opens a new stream and republishes the complete registry before pulling.
+The worker loads its task registry, connects only to the configured local Unix socket, and opens a `Work` stream whose first message is a `WorkerRegistration` carrying identity, codecs, and generation 1 of its capability set. It begins sending `PullRequest` only after the registration response. A changed registry is sent as a complete `update_tasks` snapshot with a higher generation. It receives `LeasedTask`, starts a heartbeat tied to `lease_id`, and uses `PutObject`/`GetObject` to read and write objects. Reconnect opens a new stream and republishes the complete registry before pulling.
 
 All socket operations have deadlines. EOF or agent restart ends the current worker process cleanly so the manager can restart it; it does not continue executing work whose lease can no longer be renewed.
 

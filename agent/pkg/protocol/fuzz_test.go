@@ -47,8 +47,7 @@ func FuzzValidateTaskEnvelope(f *testing.F) {
 	})
 }
 
-// FuzzValidateWorkerRegistration covers the worker handshake, which carries
-// the identity and capability constraints the old HELLO message enforced.
+// FuzzValidateWorkerRegistration covers the first Work-stream message.
 func FuzzValidateWorkerRegistration(f *testing.F) {
 	seedRegistrationCorpus(f)
 

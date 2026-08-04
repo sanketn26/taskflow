@@ -78,24 +78,31 @@ agent/cmd/taskwire-agent/main.go
 - Bind the Unix socket, set `0660`, and apply the configured group before accepting.
 - gRPC owns per-stream framing and flow control; handlers never write raw bytes.
 - Enforce role/owner permissions from Phase 1 request metadata via the protocol interceptors; gRPC correlates responses.
-- Require workers to publish a valid `REGISTER_TASKS` generation before PULL; remove their capability record on disconnect and fence stale generations.
+- Require the first `Work` message to register the worker and its complete
+  capability generation; accept later `update_tasks` snapshots only on that
+  stream, remove capabilities on disconnect, and fence stale generations.
 - Permit only one primary result-notification connection per owner; replacement is atomic and never drops persisted results.
-- Decode and schema errors receive `ERROR` when possible and close only the offending connection.
-- Track an authenticated/declared `owner_id` per Runtime connection. Disconnect removes connection registrations, never task/result state.
-- Bound reads, writes, pending requests, and shutdown waits with deadlines.
+- Return semantic failures as gRPC statuses with Taskwire error details; a bad
+  stream message ends only that stream.
+- Compare the authenticated Runtime owner with every owner-scoped request.
+  Disconnect never removes task or result state.
+- Bound RPCs, streams, object transfers, and shutdown waits with deadlines.
 
 ### Request semantics
 
 - `Submit`: validate identity and envelope; store referenced/large input first; idempotently `Create` by task ID; respond only after the selected backend durability boundary. Same ID plus same content returns the same response; same ID plus different content is `task_conflict`.
-- `RegisterTasks` / `Work` registration: validate against the stream's runtime/codecs, atomically replace its capability generation, and return the accepted count. Capability state is stream-scoped and is not persisted as task state.
+- `Work` registration: validate the initial worker identity, runtime, codecs,
+  and complete task set. Later `update_tasks` messages atomically replace the
+  stream's capability generation. Capability state is not persisted as task
+  state.
 - `PullRequest` on `Work`: atomically `Claim` using the stream's registered capabilities and configured pool labels; send nothing when no compatible eligible task exists; otherwise send `LeasedTask` with lease ID, TTL, and attempt.
-- `HEARTBEAT`: renew only the matching active lease. Unknown/stale leases return a typed error.
-- `COMPLETE`: validate the referenced result through `ObjectStore.Stat`, then atomically record terminal state/result record under the active lease. Only after commit may the agent send `RESULT` to a connected owner.
+- `HeartbeatRequest`: renew only the matching active lease. Unknown/stale leases return a typed error.
+- `Completion`: validate the referenced result through `ObjectStore.Stat`, then atomically record terminal state/result record under the active lease. Only after commit may the agent publish it to `WatchResults`.
 - `WatchResults`: call `ListResults(owner, after, limit)` and stream ordered notifications. Never expose another owner's records.
-- `TASK_QUERY`: return owner-isolated snapshots in request order; unknown and wrong-owner IDs are indistinguishable.
+- `QueryTasks`: return owner-isolated snapshots in request order; unknown and wrong-owner IDs are indistinguishable.
 - `AckResult`: atomically acknowledge the matching owner/task/cursor; duplicates are idempotent.
-- `CANCEL`: conditional queued → cancelled transition. Leased, remote, terminal, or unknown tasks return `too_late`; a successful cancellation creates a terminal result record so the Future resolves.
-- `STATUS`: local-socket-only snapshot with counts by state, active leases, worker PIDs/restarts, storage health, and cluster members.
+- `Cancel`: conditional queued → cancelled transition. Leased, remote, terminal, or unknown tasks return `too_late`; a successful cancellation creates a terminal result record so the Future resolves.
+- `Status`: local-socket-only snapshot with counts by state, active leases, worker PIDs/restarts, storage health, and cluster members.
 
 Connection queues, active transfers, object bytes, notifier batches, and query batches are bounded by the Phase 1 configuration. When a connection's serialized write queue reaches its bound, close it with `transfer_limit` or `shutdown` as appropriate; never allow a slow Runtime to block state commits, lease renewal, or another connection.
 
@@ -228,7 +235,7 @@ type WorkerCapabilities struct {
 	Runtime              string // python | nodejs | go
 	Codecs               []string
 	CapabilityGeneration uint64
-	// Exact identities this worker can run (from REGISTER_TASKS):
+	// Exact identities this Work stream registered:
 	Tasks []TaskCapability
 	// Pool labels from config (applied after capability filter):
 	Labels map[string]string
@@ -537,9 +544,9 @@ func (s *Server) Work(stream pb.TaskwireControl_WorkServer) error {
 **Primary owner stream:**
 
 ```go
-// map[OwnerID]*ownerStream via protocol.OwnerRegistry
-// on WatchResults open: Promote; the old stream stops receiving new results
-// never drop persisted results
+// Keep this registry inside the result-stream service and protect it with a
+// mutex. Opening a stream atomically replaces and cancels the prior stream for
+// that owner. Persisted results remain the source of truth.
 ```
 
 ### Step 7 — Wire `main.go`

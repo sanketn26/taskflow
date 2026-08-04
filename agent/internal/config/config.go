@@ -52,11 +52,11 @@ type IPCConfig struct {
 	MaxActiveTransfers      int64
 	MaxTransferBytes        int64
 	WriteQueueSize          int64
+	MaxMessageSizeMB        int64
 }
 
 type QueueConfig struct {
 	MaxAttempts      int64
-	MaxFrameSizeMB   int64
 	LeaseTTLMs       int64
 	ReaperIntervalMs int64
 }
@@ -307,7 +307,7 @@ func decodeIPC(d map[string]interface{}, path string) (IPCConfig, error) {
 		"submit_ack_timeout_ms": true, "reconnect_backoff_ms": true, "result_batch_size": true,
 		"task_query_batch_size": true, "read_timeout_ms": true, "write_timeout_ms": true,
 		"object_transfer_timeout_ms": true, "object_chunk_bytes": true, "max_active_transfers": true,
-		"max_transfer_bytes": true, "write_queue_size": true,
+		"max_transfer_bytes": true, "write_queue_size": true, "max_message_size_mb": true,
 	}
 	if err := noUnknown(d, allowed, path); err != nil {
 		return IPCConfig{}, err
@@ -354,11 +354,14 @@ func decodeIPC(d map[string]interface{}, path string) (IPCConfig, error) {
 	if cfg.WriteQueueSize, err = get("write_queue_size"); err != nil {
 		return IPCConfig{}, err
 	}
+	if cfg.MaxMessageSizeMB, err = get("max_message_size_mb"); err != nil {
+		return IPCConfig{}, err
+	}
 	return cfg, nil
 }
 
 func decodeQueue(d map[string]interface{}, path string) (QueueConfig, error) {
-	allowed := map[string]bool{"max_attempts": true, "max_frame_size_mb": true, "lease_ttl_ms": true, "reaper_interval_ms": true}
+	allowed := map[string]bool{"max_attempts": true, "lease_ttl_ms": true, "reaper_interval_ms": true}
 	if err := noUnknown(d, allowed, path); err != nil {
 		return QueueConfig{}, err
 	}
@@ -372,9 +375,6 @@ func decodeQueue(d map[string]interface{}, path string) (QueueConfig, error) {
 	var cfg QueueConfig
 	var err error
 	if cfg.MaxAttempts, err = get("max_attempts"); err != nil {
-		return QueueConfig{}, err
-	}
-	if cfg.MaxFrameSizeMB, err = get("max_frame_size_mb"); err != nil {
 		return QueueConfig{}, err
 	}
 	if cfg.LeaseTTLMs, err = get("lease_ttl_ms"); err != nil {
@@ -1201,8 +1201,8 @@ func validate(cfg *Config) error {
 	if cfg.Queue.LeaseTTLMs < 1000 {
 		return newErr("queue.lease_ttl_ms", "must be >= 1000")
 	}
-	if cfg.IPC.ObjectChunkBytes > cfg.Queue.MaxFrameSizeMB*1024*1024 {
-		return newErr("ipc.object_chunk_bytes", "must not exceed queue.max_frame_size_mb converted to bytes")
+	if cfg.IPC.ObjectChunkBytes > cfg.IPC.MaxMessageSizeMB*1024*1024 {
+		return newErr("ipc.object_chunk_bytes", "must not exceed ipc.max_message_size_mb converted to bytes")
 	}
 
 	if !stateBackends[cfg.Storage.State.Type] {

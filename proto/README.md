@@ -5,9 +5,11 @@ defines both the `TaskwireControl` gRPC service and every message it carries.
 Generated Go and Python bindings are committed so installing Taskwire does not
 require `protoc`.
 
-The checked-in Python bindings were generated with `grpcio-tools` 1.83.0 and
-require `protobuf >= 6.33.5, < 7` and `grpcio >= 1.83`. The Go bindings use
-`protoc-gen-go` 1.36.11 and `protoc-gen-go-grpc` 1.6.2.
+The supported Python runtime is `protobuf >= 6.33.5, < 7` with `grpcio >=
+1.83`. The Go bindings use `protoc-gen-go` 1.36.11 and
+`protoc-gen-go-grpc` 1.6.2. Code generation must use a compiler compatible
+with those runtime ranges; CI imports the generated modules to detect a
+generator/runtime mismatch.
 
 Any language with a gRPC implementation can generate a working client from this
 file alone — no hand-written framing code is involved.
@@ -30,13 +32,12 @@ protoc -I proto \
 ```sh
 python -m grpc_tools.protoc -I proto \
   --python_out=python/taskwire/protocol/pb \
-  --pyi_out=python/taskwire/protocol/pb \
   --grpc_python_out=python/taskwire/protocol/pb \
   proto/taskwire/v1/control.proto
 ```
 
 The Python generator creates a `taskwire/v1/` output prefix based on the proto
-source path. Move `control_pb2.py`, `control_pb2.pyi`, and `control_pb2_grpc.py`
+source path. Move `control_pb2.py` and `control_pb2_grpc.py`
 into `python/taskwire/protocol/pb/` after generation, then fix the import at the
 top of `control_pb2_grpc.py` to match the flattened layout:
 

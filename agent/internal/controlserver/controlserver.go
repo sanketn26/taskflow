@@ -85,8 +85,7 @@ func (s *Server) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusSna
 // Leasing itself arrives in a later phase, so the stream stays open, draining
 // and validating worker messages until the client closes it.
 func (s *Server) Work(stream pb.TaskwireControl_WorkServer) error {
-	state := protocol.NewConnectionState()
-	session := protocol.Session{}
+	state := newWorkerState()
 
 	first, err := stream.Recv()
 	if err != nil {
@@ -101,7 +100,7 @@ func (s *Server) Work(stream pb.TaskwireControl_WorkServer) error {
 		return protocol.StatusError(protocol.NotRegistered,
 			"first Work message must be a registration")
 	}
-	if err := session.RegisterWorker(state, registration); err != nil {
+	if err := state.register(registration); err != nil {
 		return protocol.StatusFromError(err)
 	}
 
@@ -123,7 +122,7 @@ func (s *Server) Work(stream pb.TaskwireControl_WorkServer) error {
 			}
 			return err
 		}
-		if err := s.handleWorkerMessage(stream, state, &session, message); err != nil {
+		if err := s.handleWorkerMessage(stream, state, message); err != nil {
 			return err
 		}
 	}
@@ -131,30 +130,29 @@ func (s *Server) Work(stream pb.TaskwireControl_WorkServer) error {
 
 func (s *Server) handleWorkerMessage(
 	stream pb.TaskwireControl_WorkServer,
-	state *protocol.ConnectionState,
-	session *protocol.Session,
+	state *workerState,
 	message *pb.WorkerMessage,
 ) error {
 	switch body := message.Body.(type) {
-	case *pb.WorkerMessage_Register:
-		if err := session.RegisterTasks(state, body.Register.GetTasks()); err != nil {
+	case *pb.WorkerMessage_UpdateTasks:
+		if err := state.updateTasks(body.UpdateTasks); err != nil {
 			return protocol.StatusFromError(err)
 		}
 		return stream.Send(&pb.AgentMessage{
 			Body: &pb.AgentMessage_Registered{Registered: &pb.WorkerRegistrationResponse{
 				WorkerId:   state.WorkerID,
 				Generation: state.CapabilityGeneration,
-				Accepted:   uint32(len(body.Register.GetTasks().GetTasks())),
+				Accepted:   uint32(len(body.UpdateTasks.GetTasks())),
 			}},
 		})
 
+	case *pb.WorkerMessage_Register:
+		return protocol.StatusError(protocol.InvalidMessage,
+			"worker registration may only be sent as the first Work message")
+
 	case *pb.WorkerMessage_Pull:
-		if err := protocol.Validate(body.Pull); err != nil {
+		if err := state.validatePull(body.Pull); err != nil {
 			return protocol.StatusFromError(err)
-		}
-		if state.CapabilityGeneration == 0 {
-			return protocol.StatusError(protocol.NotRegistered,
-				"worker has not registered task capabilities")
 		}
 		// No queue yet: a phase 1 agent has nothing to lease, and gRPC lets
 		// the stream stay open until a task exists.

@@ -33,12 +33,10 @@ proto:
 		proto/taskwire/v1/control.proto
 	cd $(REPO_ROOT) && $(PYTHON) -m grpc_tools.protoc -I proto \
 		--python_out=python/taskwire/protocol/pb \
-		--pyi_out=python/taskwire/protocol/pb \
 		--grpc_python_out=python/taskwire/protocol/pb \
 		proto/taskwire/v1/control.proto
 	cd $(REPO_ROOT)/python/taskwire/protocol/pb && \
-		mv taskwire/v1/control_pb2.py taskwire/v1/control_pb2.pyi \
-		   taskwire/v1/control_pb2_grpc.py . && \
+		mv taskwire/v1/control_pb2.py taskwire/v1/control_pb2_grpc.py . && \
 		rm -rf taskwire && \
 		sed -i 's/^from taskwire\.v1 import/from taskwire.protocol.pb import/' \
 			control_pb2_grpc.py

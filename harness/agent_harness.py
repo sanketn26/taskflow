@@ -19,7 +19,8 @@ import yaml
 from harness.chaos import ChaosTimeline
 from harness.timing import wait_until
 from taskwire.agent_locate import find_agent_binary
-from taskwire.protocol import ControlClient, StatusSnapshot
+from taskwire.ipc import ControlClient
+from taskwire.protocol import pb
 from taskwire.protocol.errors import ProtocolError
 
 _SIGKILL_GRACE_SECONDS = 5.0
@@ -146,7 +147,7 @@ class AgentHarness:
 
     # -- raw protocol access --------------------------------------------
 
-    def status(self, timeout: float = 2.0) -> StatusSnapshot:
+    def status(self, timeout: float = 2.0) -> pb.StatusSnapshot:
         """Call the Status RPC as an admin client; returns the snapshot."""
         with ControlClient.admin(
             str(self.socket_path), max_message_bytes=_MAX_PAYLOAD_BYTES
@@ -198,10 +199,10 @@ class AgentHarness:
                         "max_active_transfers": 4,
                         "max_transfer_bytes": 1073741824,
                         "write_queue_size": 256,
+                        "max_message_size_mb": 16,
                     },
                     "queue": {
                         "max_attempts": 5,
-                        "max_frame_size_mb": 16,
                         "lease_ttl_ms": 30000,
                         "reaper_interval_ms": 1000,
                     },

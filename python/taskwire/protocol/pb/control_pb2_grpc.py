@@ -27,16 +27,15 @@ if _version_not_supported:
 
 class TaskwireControlStub:
     """TaskwireControl is the authoritative control-plane contract. gRPC over
-    HTTP/2 supplies framing, request correlation, deadlines, flow control, and
+    HTTP/2 supplies message boundaries, request correlation, deadlines, flow control, and
     cancellation; Taskwire defines only the messages and their semantics.
 
     Task inputs and results remain opaque bytes identified by ValueRef.codec;
     "msgpack" there is an application-value codec, not the control-plane
     encoding.
 
-    Roles (runtime, worker, admin) are carried in per-RPC metadata rather than a
-    HELLO handshake message; see docs/protocol.md. Errors use gRPC status codes
-    with a Taskwire stable error code in the status details.
+    Local roles (runtime, worker, admin) are carried in per-RPC metadata.
+    Errors use gRPC status codes with a stable Taskwire error in the status details.
     --- Runtime (submitting application) --------------------------------
     """
 
@@ -70,11 +69,6 @@ class TaskwireControlStub:
                 '/taskwire.v1.TaskwireControl/QueryTasks',
                 request_serializer=taskwire_dot_v1_dot_control__pb2.TaskQuery.SerializeToString,
                 response_deserializer=taskwire_dot_v1_dot_control__pb2.TaskSnapshot.FromString,
-                _registered_method=True)
-        self.RegisterTasks = channel.unary_unary(
-                '/taskwire.v1.TaskwireControl/RegisterTasks',
-                request_serializer=taskwire_dot_v1_dot_control__pb2.TaskRegistration.SerializeToString,
-                response_deserializer=taskwire_dot_v1_dot_control__pb2.RegisterTasksResponse.FromString,
                 _registered_method=True)
         self.Work = channel.stream_stream(
                 '/taskwire.v1.TaskwireControl/Work',
@@ -115,16 +109,15 @@ class TaskwireControlStub:
 
 class TaskwireControlServicer:
     """TaskwireControl is the authoritative control-plane contract. gRPC over
-    HTTP/2 supplies framing, request correlation, deadlines, flow control, and
+    HTTP/2 supplies message boundaries, request correlation, deadlines, flow control, and
     cancellation; Taskwire defines only the messages and their semantics.
 
     Task inputs and results remain opaque bytes identified by ValueRef.codec;
     "msgpack" there is an application-value codec, not the control-plane
     encoding.
 
-    Roles (runtime, worker, admin) are carried in per-RPC metadata rather than a
-    HELLO handshake message; see docs/protocol.md. Errors use gRPC status codes
-    with a Taskwire stable error code in the status details.
+    Local roles (runtime, worker, admin) are carried in per-RPC metadata.
+    Errors use gRPC status codes with a stable Taskwire error in the status details.
     --- Runtime (submitting application) --------------------------------
     """
 
@@ -138,9 +131,8 @@ class TaskwireControlServicer:
 
     def WatchResults(self, request, context):
         """WatchResults streams terminal result notifications for one owner,
-        resuming after the supplied cursor. Replaces RESUME_RESULTS plus
-        unsolicited RESULT frames: stream position is the cursor, so a
-        reconnecting Runtime replays by reopening the stream.
+        resuming after the supplied cursor. A reconnecting Runtime replays by
+        reopening the stream from its last durably handled cursor.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -168,17 +160,10 @@ class TaskwireControlServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def RegisterTasks(self, request, context):
+    def Work(self, request_iterator, context):
         """--- Worker ----------------------------------------------------------
 
-        RegisterTasks atomically replaces the connection's task capability set.
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def Work(self, request_iterator, context):
-        """Work is the worker's long-lived duplex session. The worker sends its
+        Work is the worker's long-lived duplex session. The worker sends its
         registration, pull requests, heartbeats, and completions; the agent
         sends leased tasks. Stream lifetime bounds lease ownership, so a
         dropped connection is an unambiguous signal to reap leases.
@@ -263,11 +248,6 @@ def add_TaskwireControlServicer_to_server(servicer, server):
                     request_deserializer=taskwire_dot_v1_dot_control__pb2.TaskQuery.FromString,
                     response_serializer=taskwire_dot_v1_dot_control__pb2.TaskSnapshot.SerializeToString,
             ),
-            'RegisterTasks': grpc.unary_unary_rpc_method_handler(
-                    servicer.RegisterTasks,
-                    request_deserializer=taskwire_dot_v1_dot_control__pb2.TaskRegistration.FromString,
-                    response_serializer=taskwire_dot_v1_dot_control__pb2.RegisterTasksResponse.SerializeToString,
-            ),
             'Work': grpc.stream_stream_rpc_method_handler(
                     servicer.Work,
                     request_deserializer=taskwire_dot_v1_dot_control__pb2.WorkerMessage.FromString,
@@ -313,16 +293,15 @@ def add_TaskwireControlServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class TaskwireControl:
     """TaskwireControl is the authoritative control-plane contract. gRPC over
-    HTTP/2 supplies framing, request correlation, deadlines, flow control, and
+    HTTP/2 supplies message boundaries, request correlation, deadlines, flow control, and
     cancellation; Taskwire defines only the messages and their semantics.
 
     Task inputs and results remain opaque bytes identified by ValueRef.codec;
     "msgpack" there is an application-value codec, not the control-plane
     encoding.
 
-    Roles (runtime, worker, admin) are carried in per-RPC metadata rather than a
-    HELLO handshake message; see docs/protocol.md. Errors use gRPC status codes
-    with a Taskwire stable error code in the status details.
+    Local roles (runtime, worker, admin) are carried in per-RPC metadata.
+    Errors use gRPC status codes with a stable Taskwire error in the status details.
     --- Runtime (submitting application) --------------------------------
     """
 
@@ -451,33 +430,6 @@ class TaskwireControl:
             '/taskwire.v1.TaskwireControl/QueryTasks',
             taskwire_dot_v1_dot_control__pb2.TaskQuery.SerializeToString,
             taskwire_dot_v1_dot_control__pb2.TaskSnapshot.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def RegisterTasks(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/taskwire.v1.TaskwireControl/RegisterTasks',
-            taskwire_dot_v1_dot_control__pb2.TaskRegistration.SerializeToString,
-            taskwire_dot_v1_dot_control__pb2.RegisterTasksResponse.FromString,
             options,
             channel_credentials,
             insecure,

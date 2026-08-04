@@ -156,13 +156,13 @@ await client.close();
 
 ```typescript
 // 1. Work stream: WorkerRegistration (runtime: "nodejs", codecs: ["msgpack","bytes"])
-// 2. REGISTER_TASKS generation 1
-// 3. PULL → TASK | empty
+// 2. receive the Work registration response for generation 1
+// 3. PullRequest → LeasedTask, or wait when no compatible task exists
 // 4. start heartbeat (ttl/3)
-// 5. OBJECT_GET input if needed; verify sha256
+// 5. GetObject input if needed; verify sha256
 // 6. invoke handler
-// 7. OBJECT_PUT result; COMPLETE
-// 8. on reconnect: new capability namespace, full re-register
+// 7. PutObject result; Completion
+// 8. on reconnect: open a new Work stream and send a full registration
 ```
 
 ### Portable codec rules (strict)

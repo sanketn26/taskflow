@@ -5,16 +5,15 @@ package taskwire.v1;
 option go_package = "github.com/sanketn26/taskwire/agent/pkg/protocol/pb;pb";
 
 // TaskwireControl is the authoritative control-plane contract. gRPC over
-// HTTP/2 supplies framing, request correlation, deadlines, flow control, and
+// HTTP/2 supplies message boundaries, request correlation, deadlines, flow control, and
 // cancellation; Taskwire defines only the messages and their semantics.
 //
 // Task inputs and results remain opaque bytes identified by ValueRef.codec;
 // "msgpack" there is an application-value codec, not the control-plane
 // encoding.
 //
-// Roles (runtime, worker, admin) are carried in per-RPC metadata rather than a
-// HELLO handshake message; see docs/protocol.md. Errors use gRPC status codes
-// with a Taskwire stable error code in the status details.
+// Local roles (runtime, worker, admin) are carried in per-RPC metadata. Errors
+// use gRPC status codes with a stable Taskwire error in the status details.
 service TaskwireControl {
   // --- Runtime (submitting application) --------------------------------
 
@@ -23,9 +22,8 @@ service TaskwireControl {
   rpc Submit(TaskEnvelope) returns (SubmitResponse);
 
   // WatchResults streams terminal result notifications for one owner,
-  // resuming after the supplied cursor. Replaces RESUME_RESULTS plus
-  // unsolicited RESULT frames: stream position is the cursor, so a
-  // reconnecting Runtime replays by reopening the stream.
+  // resuming after the supplied cursor. A reconnecting Runtime replays by
+  // reopening the stream from its last durably handled cursor.
   rpc WatchResults(WatchResultsRequest) returns (stream ResultNotification);
 
   // AckResult confirms durable client-side handling of one notification so
@@ -39,9 +37,6 @@ service TaskwireControl {
   rpc QueryTasks(TaskQuery) returns (TaskSnapshot);
 
   // --- Worker ----------------------------------------------------------
-
-  // RegisterTasks atomically replaces the connection's task capability set.
-  rpc RegisterTasks(TaskRegistration) returns (RegisterTasksResponse);
 
   // Work is the worker's long-lived duplex session. The worker sends its
   // registration, pull requests, heartbeats, and completions; the agent
@@ -83,6 +78,7 @@ message WorkerMessage {
     PullRequest pull = 2;
     HeartbeatRequest heartbeat = 3;
     Completion complete = 4;
+    TaskRegistration update_tasks = 5;
   }
 }
 
@@ -96,8 +92,8 @@ message AgentMessage {
   }
 }
 
-// WorkerRegistration opens a Work stream: it carries the identity fields the
-// removed worker HELLO used to establish, plus the initial capability set.
+// WorkerRegistration is the first Work message and establishes immutable
+// stream identity plus the initial complete capability set.
 message WorkerRegistration {
   string worker_id = 1;
   string runtime = 2;
@@ -147,12 +143,6 @@ message TaskRegistration {
   string worker_id = 1;
   uint64 generation = 2;
   repeated TaskCapability tasks = 3;
-}
-
-message RegisterTasksResponse {
-  string worker_id = 1;
-  uint64 generation = 2;
-  uint32 accepted = 3;
 }
 
 message TaskQuery {

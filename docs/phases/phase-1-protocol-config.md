@@ -2,7 +2,10 @@
 
 ## Goal
 
-Freeze the language-neutral wire, envelope, reference, worker-capability, and configuration contracts used by the Python SDK, all worker runtimes, and the Go agent. This phase contains no task execution, daemons, networking, or persistent storage implementations. Python is the first implemented worker runtime, but the v1 contract must admit Node.js and Go workers without adding fields or changing task persistence.
+Define the smallest language-neutral boundary between clients, workers, and the
+Go agent. The boundary consists of one Protobuf service, generated bindings,
+stable domain errors, and configuration needed to operate that service. Python
+is the first runtime, but no Python state machine is part of the wire contract.
 
 Workers never receive application callback addresses, and Kafka is not a result-transport mode. The schemas in this file are the complete protocol and configuration contract for implementation.
 
@@ -23,17 +26,38 @@ The current Go config loader and `taskwire-agent` server are lifecycle stubs. Th
 - Python and Go configuration loaders validated against one example YAML file.
 - Fuzz seeds for message decoding and semantic validation.
 
+## Design principles
+
+1. **The RPC is the unit of interaction.** Unary calls have no hidden
+   connection state. Long-lived state exists only inside the stream that owns
+   it.
+2. **Generated types are boundary types.** Handlers accept generated Protobuf
+   messages, validate their semantics, and call domain services. Taskwire does
+   not wrap generated messages in a parallel protocol object model.
+3. **`Work` is the worker session.** Registration, capability replacement,
+   pulls, heartbeats, and completions share one duplex stream. Closing that
+   stream releases its capabilities and begins lease recovery.
+4. **Identity is established before domain work.** Local callers are admitted
+   by Unix-socket permissions and RPC metadata. Peer agents use a separately
+   authenticated transport in Phase 5. Every owner-scoped handler compares the
+   authenticated owner with the request owner.
+5. **Durability precedes acknowledgement.** A successful response means the
+   documented state or object durability boundary has been crossed.
+6. **Streams provide ordering, not persistence.** Results remain persisted and
+   cursor-addressable; reconnecting clients resume from durable state.
+7. **Limits and deadlines are explicit.** Message size, stream lifetime,
+   object size, concurrency, and shutdown waits are bounded.
+
 ## Transport
 
 The control plane is **gRPC over HTTP/2**, served on a Unix domain socket. gRPC
-supplies framing, length bounds, request correlation, ordering, flow control,
-deadlines, and cancellation, so Taskwire defines no wire frame of its own. This
-is what makes the protocol an open standard rather than a Taskwire-specific
-transport: any language with a gRPC implementation can generate a working client
-from `control.proto` alone, with no hand-written framing code.
+supplies message boundaries, request correlation, ordering, flow control,
+deadlines, and cancellation. Taskwire defines only domain messages and RPC
+semantics. Any supported runtime generates its boundary code from
+`control.proto`.
 
 `proto/taskwire/v1/control.proto` is the authoritative contract. Message sizes
-are bounded by `queue.max_frame_size_mb` applied as the gRPC max send/receive
+are bounded by `ipc.max_message_size_mb` applied as the gRPC max send/receive
 message size in both directions.
 
 Local Unix-socket permissions are the v0.1 authentication boundary; owner ID
@@ -41,16 +65,18 @@ remains a bearer capability for owner-scoped operations.
 
 ### Identity and roles
 
-There is no `HELLO` handshake. Each RPC carries identity in gRPC metadata:
+Each local RPC carries identity in gRPC metadata:
 
 | Metadata key | Value |
 |---|---|
 | `taskwire-role` | `runtime`, `worker`, or `admin` |
 | `taskwire-owner-id` | 16 owner-ID bytes, hex-encoded; required for `runtime` |
 
-Identity travels with every call, so a reconnect replays no connection-local
-state. A request with missing or malformed role metadata is `not_registered`; a
-role calling an RPC it is not permitted to use is `role_forbidden`.
+Runtime owner identity travels with every call. Worker identity and capability
+state are established inside `Work`, because those values have stream lifetime.
+Peer identity belongs to the authenticated transport introduced in Phase 5.
+Cluster RPCs are denied by the local role interceptor and must not be granted
+merely because a caller supplied metadata.
 
 ## Service
 
@@ -61,8 +87,7 @@ role calling an RPC it is not permitted to use is `role_forbidden`.
 | `AckResult` | unary | runtime | Confirm durable handling so the agent may release a result |
 | `Cancel` | unary | runtime | Request cancellation of one owner's task |
 | `QueryTasks` | unary | runtime | Owner-isolated task snapshots |
-| `RegisterTasks` | unary | worker | Replace a worker's capability set |
-| `Work` | duplex stream | worker | Registration, pulls, heartbeats, completions ⇄ leased tasks |
+| `Work` | duplex stream | worker | Registration, capability updates, pulls, heartbeats, completions ⇄ leased tasks |
 | `PutObject` | client stream | runtime/worker | Stream object content; returns the canonical `ObjectRef` |
 | `GetObject` | server stream | runtime/worker | Stream stored object content |
 | `Status` | unary | any | Agent status snapshot; also the readiness probe |
@@ -70,20 +95,19 @@ role calling an RPC it is not permitted to use is `role_forbidden`.
 | `ForwardCompletion` | unary | agent | Return a remote completion to the origin |
 | `Steal` | unary | agent | Request work from a peer agent (Phase 5) |
 
-Streams replace what the frame layer correlated by hand:
+Stream ownership is explicit:
 
 - **`Work`** is the worker's session. Its first message must be a
   `WorkerRegistration` carrying identity, codecs, and the initial capability
-  set; anything else is `not_registered`. Stream lifetime bounds lease
-  ownership, so a dropped connection is an unambiguous signal to reap leases. A
-  worker may re-send `register` to replace its capability set atomically.
-- **`WatchResults`** replaces `RESUME_RESULTS` plus unsolicited `RESULT`
-  notifications. Stream position *is* the cursor: a Runtime resumes by
-  reopening the stream with the last cursor it handled. A newer stream for the
-  same owner becomes primary; the old one stops receiving new notifications.
-- **`PutObject`/`GetObject`** replace the `transfer_id` correlation and explicit
-  chunk sequencing. One transfer is one stream, and gRPC guarantees ordering, so
-  `ObjectChunk` carries no sequence number or transfer ID. The first chunk of a
+  set; anything else is `not_registered`. Later `update_tasks` messages replace
+  the complete capability set atomically. A pull must carry the registered
+  worker ID and current generation. Stream lifetime bounds capability and lease
+  ownership.
+- **`WatchResults`** streams persisted results after a cursor. A reconnect opens
+  a new stream from the last durably handled cursor. A newer stream for the same
+  owner becomes primary; the old stream is cancelled.
+- **`PutObject`/`GetObject`** give each object transfer its own ordered stream.
+  The first chunk of a
   `PutObject` stream sets metadata (`codec`, `size`, `sha256`); the response
   returns the canonical `ObjectRef` only after size/checksum verification and
   the store durability boundary. A checksum mismatch, timeout, or disconnect
@@ -115,9 +139,8 @@ Responses are typed per RPC and never inferred from connection context. The
 durability boundary. A Runtime confirms durable handling with `AckResult`, which
 lets the agent release a notification before retention expiry.
 
-A `PullRequest` on the `Work` stream is answered with a `LeasedTask` when one is
-available; with no task available the agent simply sends nothing, because the
-stream stays open. This replaces the `empty_pull` ACK.
+A `PullRequest` is answered with a `LeasedTask` when one is available. When no
+compatible task exists, the agent sends nothing and keeps the stream open.
 
 ## Protobuf Control Schema
 
@@ -288,15 +311,13 @@ Python tuples, sets, classes, and arbitrary-size integers; JavaScript `undefined
 
 ### Response and error schemas
 
-The typed `Ack` union is gone: each RPC declares its own response message, so a
-response can no longer carry fields that disagree with its kind.
+Each RPC declares its own response message.
 
 ```text
 SubmitResponse             {task_id: binary(16)}
 CancelResponse             {task_id: binary(16), cancelled: bool}
 CompletionResponse         {lease_id: binary(16)}
 HeartbeatResponse          {lease_id: binary(16)}
-RegisterTasksResponse      {worker_id: string, generation: uint64, accepted: uint32}
 WorkerRegistrationResponse {worker_id: string, generation: uint64, accepted: uint32}
 PutObjectResponse          {object: ObjectRef}
 ForwardTaskResponse        {task_id: binary(16), transfer_id: binary(16)}
@@ -330,11 +351,9 @@ storage-unavailable, shutdown, and internal errors are retryable. Python and Go
 expose constants for this registry, and Phase 4 maps each code to a documented
 SDK exception.
 
-Transport-level failures that the frame layer used to name — `unsupported_version`,
-`unknown_message_type`, `unknown_flags`, `frame_too_large` — are gRPC's
-responsibility and are no longer Taskwire codes. `duplicate_request` is gone
-because HTTP/2 stream IDs, not a Taskwire request-ID namespace, correlate
-requests.
+Malformed Protobuf, unsupported RPCs, message-size violations, cancellation,
+and transport availability are represented by native gRPC status. Taskwire
+status details are reserved for domain and authorization failures.
 
 | Taskwire code | gRPC status |
 |---|---|
@@ -373,10 +392,10 @@ ipc:
   max_active_transfers: 4
   max_transfer_bytes: 1073741824
   write_queue_size: 256
+  max_message_size_mb: 16
 
 queue:
   max_attempts: 5
-  max_frame_size_mb: 16
   lease_ttl_ms: 30000
   reaper_interval_ms: 1000
 
@@ -457,8 +476,8 @@ metrics:
 Validation requirements:
 
 - `lease_ttl_ms >= 1000`; heartbeat interval is one third of it.
-- Frame size, timeouts, batch sizes, attempts, and retention values are positive.
-- `object_chunk_bytes` is no greater than the decoded frame limit; transfer count/size and task-query limits are positive.
+- Message size, timeouts, batch sizes, attempts, and retention values are positive.
+- `object_chunk_bytes` is no greater than `ipc.max_message_size_mb`; transfer count/size and task-query limits are positive.
 - `memory` state/object stores require an explicit development configuration warning.
 - SQLite and filesystem paths must be non-empty; configured default object store must exist.
 - Unknown backend types, including PostgreSQL/S3 until their separately gated adapters ship, are rejected with `unsupported_backend`.
@@ -494,10 +513,9 @@ Create or replace these files:
 
 - `python/taskwire/protocol/pb/control_pb2.py` and `control_pb2_grpc.py`:
   generated schema and service bindings.
-- `python/taskwire/protocol/messages.py`: re-export generated schema types and
-  expose `validate(message)` for Taskwire semantic constraints. It also owns the
-  separate portable task-value MsgPack adapter.
-- `python/taskwire/protocol/client.py`: `ControlClient` with `runtime`,
+- `python/taskwire/protocol/semantics.py`: semantic validation and the portable
+  task-value MsgPack adapter. It defines no parallel message classes.
+- `python/taskwire/ipc/client.py`: `ControlClient` with `runtime`,
   `worker`, and `admin` constructors. It dials `unix:<socket>`, attaches role
   metadata to every call, bounds message size, and re-raises agent failures as
   `ProtocolError` when the status carries a Taskwire detail.
@@ -506,13 +524,8 @@ Create or replace these files:
   `ProtocolError(code, message)` exception, and `error_from_rpc_error` to
   recover a Taskwire code from a gRPC status. Exception messages contain field
   names but never payload values.
-- `python/taskwire/protocol/session.py`: a pure state machine, with no sockets,
-  implementing worker registration, capability-generation fencing, and the role
-  metadata constants. Primary-owner stream selection itself belongs to Phase 2;
-  here expose deterministic transition outputs which Phase 2 can use to perform
-  replacement.
-- `python/taskwire/protocol/__init__.py`: re-export only the supported schema
-  types, client, codec functions, session types, and errors. Importing
+- `python/taskwire/protocol/__init__.py`: expose the generated `pb` module,
+  client, codec functions, semantic validation, and errors. Importing
   `taskwire` must remain independent of the optional acceleration module.
 
 The control path never invokes MsgPack. Portable task-value MsgPack uses the
@@ -521,9 +534,9 @@ finite float64 values, and caller-enforced object size bounds.
 
 ### Go protocol package
 
-The Go implementation is split into generated `pb/control.pb.go`,
-`pb/control_grpc.pb.go`, `messages.go`, `portable_msgpack.go`, `errors.go`,
-`roles.go`, `status.go`, and `session.go`:
+The Go implementation is split into generated `pb/control.pb.go` and
+`pb/control_grpc.pb.go`, plus `validation.go`, `portable_msgpack.go`,
+`errors.go`, `roles.go`, and `status.go`:
 
 - `roles.go` holds the metadata keys, the per-method role table, and the unary
   and stream interceptors that authorize every RPC and attach a
@@ -533,11 +546,10 @@ The Go implementation is split into generated `pb/control.pb.go`,
 - Generate schema structs and service stubs from the shared `.proto`. Protobuf
   `oneof` fields represent unions; `Validate` applies fixed ID/checksum lengths
   and domain invariants.
-- `messages.go` contains only semantic validation. `portable_msgpack.go` is
+- `validation.go` contains only semantic validation. `portable_msgpack.go` is
   exclusively the task-value codec.
 - Export the same stable error constants and retryability lookup as Python. The
-  session validator remains a pure state machine and has no dependency on the
-  control server or future scheduler packages.
+  only worker session state is the state owned by a live `Work` handler.
 
 The gRPC, Protobuf, and pure-Go MsgPack runtimes are direct dependencies.
 Optional Rust value-codec acceleration remains deferred until profiling
@@ -590,19 +602,18 @@ returns true only when `snapshot.ready` is true.
 `agent/internal/controlserver` serves the gRPC service: it registers the
 interceptors, answers `Status`, and validates the `Work` handshake and
 capability registration. It must not add task execution, storage, scheduling, or
-general networking. The newline `STATUS` probe and the framed protocol are both
-gone; conformance tests must fail if either is accepted.
+general networking. Readiness is defined exclusively by the `Status` RPC.
 
 ## Test Layout and Required Assertions
 
 | Test file | Required assertions |
 |---|---|
-| `python/tests/unit/test_protocol_messages.py` | generated-schema/oneof round trips, unknown-field compatibility, semantic ID validation, and separate portable-value boundaries |
+| `python/tests/unit/test_protocol_semantics.py` | generated-schema/oneof round trips, unknown-field compatibility, semantic ID validation, and separate portable-value boundaries |
 | `python/tests/unit/test_protocol_errors.py` | every registered code maps to a gRPC status, the mapping has no extra codes, retryability and status code are exposed on the exception |
-| `python/tests/unit/test_protocol_session.py` | worker registration first, capability generation fencing, codec/runtime constraints, worker-ID matching, owner registry promotion |
 | `python/tests/unit/test_protocol_fuzz.py` | validation never crashes on arbitrary bytes and only raises registered codes |
 | `python/tests/unit/test_config.py` | complete example, defaults, relative paths, duplicate/unknown/nested keys, YAML restrictions, every conditional validation branch |
-| `agent/pkg/protocol/*_test.go` | the same schema, session, role-matrix, status-mapping, and error assertions against Go APIs |
+| `agent/pkg/protocol/*_test.go` | schema semantics, role matrix, status mapping, and error assertions against Go APIs |
+| `agent/internal/controlserver/worker_state_test.go` | Work registration, capability replacement, identity matching, and generation fencing |
 | `agent/internal/controlserver/controlserver_test.go` | Status over a real socket, role enforcement with Taskwire status details, Work stream registration and heartbeat, socket removal on close |
 | `agent/internal/config/config_test.go` | the same configuration table cases as Python and normalized fixture comparison |
 | `python/tests/integration/test_protocol_compat.py` | Python gRPC client interoperates with the Go service; role metadata enforced; missing role rejected; Work stream registers and heartbeats |
@@ -686,7 +697,7 @@ python -m pytest python/tests/integration/test_protocol_compat.py -v
 
 - [ ] Oversized messages are rejected by gRPC before reaching a handler
 - [ ] Missing role metadata is `not_registered`; a forbidden RPC is `role_forbidden`
-- [ ] Session: registration first, role matrix, register before pull, generation fencing
+- [ ] Work: registration first, identity match, generation fencing, capability replacement
 - [ ] Portable msgpack rejects NaN/inf/non-string keys/extension types
 - [ ] Python and Go configs match `testdata/config/normalized.yaml`
 - [ ] No accepted `callback_addr` / `result_delivery` / text STATUS
@@ -713,20 +724,6 @@ class ControlClient:
         return self._stub.Status(
             pb.StatusRequest(), timeout=timeout, metadata=self._metadata
         )
-```
-
-### Session pure state machine (contract)
-
-```python
-# No sockets. Role authorization and request correlation belong to gRPC, so the
-# session tracks only what one Work stream has registered.
-class Session:
-    def register_worker(self, state, registration) -> None: ...
-    def register_tasks(self, state, registration) -> None: ...
-
-class OwnerRegistry:
-    def promote(self, owner_id, stream_key): ...   # newest WatchResults wins
-    def is_primary(self, owner_id, stream_key) -> bool: ...
 ```
 
 ### Regenerating Protobuf (only if schema changes)

@@ -1,9 +1,8 @@
 """gRPC client for the Taskwire control plane.
 
-Connects to a local agent over a Unix domain socket and attaches the role
-metadata every RPC requires. This replaces the hand-rolled frame reader and
-the HELLO handshake: identity travels with each call, so a reconnect needs no
-replay of connection-local state.
+Connects to a local agent over a Unix domain socket and attaches the identity
+metadata required by each RPC. Worker identity and capabilities are carried by
+the ``Work`` stream itself.
 """
 
 from __future__ import annotations
@@ -17,13 +16,13 @@ import grpc
 from taskwire.protocol.errors import ProtocolError, error_from_rpc_error
 from taskwire.protocol.pb import control_pb2 as pb
 from taskwire.protocol.pb import control_pb2_grpc as pb_grpc
-from taskwire.protocol.session import (
-    METADATA_OWNER_ID,
-    METADATA_ROLE,
-    ROLE_ADMIN,
-    ROLE_RUNTIME,
-    ROLE_WORKER,
-)
+
+ROLE_RUNTIME = "runtime"
+ROLE_WORKER = "worker"
+ROLE_ADMIN = "admin"
+
+METADATA_ROLE = "taskwire-role"
+METADATA_OWNER_ID = "taskwire-owner-id"
 
 
 def socket_target(socket_path: str) -> str:

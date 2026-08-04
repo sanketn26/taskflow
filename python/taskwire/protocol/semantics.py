@@ -22,37 +22,6 @@ from taskwire.protocol.errors import (
 )
 from taskwire.protocol.pb import control_pb2 as pb
 
-# Public schema API is generated from control.proto.
-ObjectRef = pb.ObjectRef
-ValueRef = pb.ValueRef
-PullRequest = pb.PullRequest
-TaskCapability = pb.TaskCapability
-TaskRegistration = pb.TaskRegistration
-TaskQuery = pb.TaskQuery
-TaskSnapshotEntry = pb.TaskSnapshotEntry
-TaskSnapshot = pb.TaskSnapshot
-TaskEnvelope = pb.TaskEnvelope
-LeasedTask = pb.LeasedTask
-Completion = pb.Completion
-ForwardedTask = pb.ForwardedTask
-ForwardedCompletion = pb.ForwardedCompletion
-Failure = pb.Failure
-ResultNotification = pb.ResultNotification
-StatusSnapshot = pb.StatusSnapshot
-Error = pb.Error
-HeartbeatRequest = pb.HeartbeatRequest
-CancelRequest = pb.CancelRequest
-ObjectGetRequest = pb.ObjectGetRequest
-ObjectChunk = pb.ObjectChunk
-StealRequest = pb.StealRequest
-StatusRequest = pb.StatusRequest
-WorkerMessage = pb.WorkerMessage
-AgentMessage = pb.AgentMessage
-WorkerRegistration = pb.WorkerRegistration
-WatchResultsRequest = pb.WatchResultsRequest
-AckResultRequest = pb.AckResultRequest
-SubmitResponse = pb.SubmitResponse
-
 
 class _DuplicateKey(Exception):
     pass
@@ -166,7 +135,7 @@ def validate(message: Message) -> None:
     gRPC has already guaranteed the message parses and matches the RPC's
     declared type, so this is purely about meaning. Raises ``ProtocolError``.
     """
-    if isinstance(message, WorkerRegistration):
+    if isinstance(message, pb.WorkerRegistration):
         if not all(
             (
                 message.worker_id,
@@ -185,7 +154,7 @@ def validate(message: Message) -> None:
                 INVALID_MESSAGE, "worker registration requires a task set"
             )
         validate(message.tasks)
-    elif isinstance(message, ObjectRef):
+    elif isinstance(message, pb.ObjectRef):
         if (
             not message.store
             or not message.key
@@ -193,7 +162,7 @@ def validate(message: Message) -> None:
             or len(message.sha256) != 32
         ):
             raise ProtocolError(INVALID_MESSAGE, "invalid ObjectRef")
-    elif isinstance(message, ValueRef):
+    elif isinstance(message, pb.ValueRef):
         branch = message.WhichOneof("location")
         if (
             branch is None
@@ -203,7 +172,7 @@ def validate(message: Message) -> None:
             raise ProtocolError(INVALID_MESSAGE, "invalid ValueRef union")
         if branch == "object":
             validate(message.object)
-    elif isinstance(message, TaskRegistration):
+    elif isinstance(message, pb.TaskRegistration):
         if not message.worker_id or message.generation == 0:
             raise ProtocolError(INVALID_MESSAGE, "invalid task registration")
         identities: set[tuple[str, str]] = set()
@@ -218,19 +187,19 @@ def validate(message: Message) -> None:
                 raise ProtocolError(INVALID_MESSAGE, "invalid task capability")
             _unique_strings(task.codecs, "task codecs")
             identities.add(identity)
-    elif isinstance(message, PullRequest):
+    elif isinstance(message, pb.PullRequest):
         if not message.worker_id or message.capability_generation == 0:
             raise ProtocolError(INVALID_MESSAGE, "invalid pull request")
-    elif isinstance(message, TaskQuery):
+    elif isinstance(message, pb.TaskQuery):
         _require_id(message.owner_id, "owner_id")
         if not message.task_ids:
             raise ProtocolError(INVALID_MESSAGE, "task_ids must not be empty")
         for task_id in message.task_ids:
             _require_id(task_id, "task_id")
-    elif isinstance(message, TaskSnapshot):
+    elif isinstance(message, pb.TaskSnapshot):
         for task in message.tasks:
             validate(task)
-    elif isinstance(message, TaskSnapshotEntry):
+    elif isinstance(message, pb.TaskSnapshotEntry):
         _require_id(message.task_id, "task_id")
         branch = message.WhichOneof("outcome")
         if message.state in {"queued", "leased", "unknown"}:
@@ -252,7 +221,7 @@ def validate(message: Message) -> None:
             validate(message.failure)
         else:
             raise ProtocolError(INVALID_MESSAGE, "invalid task snapshot state")
-    elif isinstance(message, TaskEnvelope):
+    elif isinstance(message, pb.TaskEnvelope):
         _require_id(message.owner_id, "owner_id")
         if (
             not message.task_name
@@ -262,35 +231,35 @@ def validate(message: Message) -> None:
         ):
             raise ProtocolError(INVALID_MESSAGE, "invalid task envelope")
         validate(message.input)
-    elif isinstance(message, LeasedTask):
+    elif isinstance(message, pb.LeasedTask):
         _require_id(message.task_id, "task_id")
         _require_id(message.lease_id, "lease_id")
         if not message.HasField("task") or message.ttl_ms == 0 or message.attempt == 0:
             raise ProtocolError(INVALID_MESSAGE, "invalid leased task")
         validate(message.task)
-    elif isinstance(message, Completion):
+    elif isinstance(message, pb.Completion):
         _require_id(message.lease_id, "lease_id")
         branch = message.WhichOneof("outcome")
         if branch is None:
             raise ProtocolError(INVALID_MESSAGE, "outcome is required")
         validate(getattr(message, branch))
-    elif isinstance(message, ForwardedTask):
+    elif isinstance(message, pb.ForwardedTask):
         _require_id(message.transfer_id, "transfer_id")
         if not message.origin_node or not message.HasField("task"):
             raise ProtocolError(INVALID_MESSAGE, "invalid forwarded task")
         validate(message.task)
-    elif isinstance(message, ForwardedCompletion):
+    elif isinstance(message, pb.ForwardedCompletion):
         _require_id(message.transfer_id, "transfer_id")
         branch = message.WhichOneof("outcome")
         if not message.remote_node or message.remote_attempt == 0 or branch is None:
             raise ProtocolError(INVALID_MESSAGE, "invalid forwarded completion")
         validate(getattr(message, branch))
-    elif isinstance(message, Failure):
+    elif isinstance(message, pb.Failure):
         if not message.code or not message.message:
             raise ProtocolError(INVALID_MESSAGE, "invalid failure")
         if message.HasField("details"):
             validate(message.details)
-    elif isinstance(message, ResultNotification):
+    elif isinstance(message, pb.ResultNotification):
         _require_id(message.owner_id, "owner_id")
         _require_id(message.task_id, "task_id")
         branch = message.WhichOneof("outcome")
@@ -303,26 +272,26 @@ def validate(message: Message) -> None:
         if message.state in {"failed", "cancelled"} and branch != "failure":
             raise ProtocolError(INVALID_MESSAGE, "failed notification requires failure")
         validate(getattr(message, branch))
-    elif isinstance(message, HeartbeatRequest):
+    elif isinstance(message, pb.HeartbeatRequest):
         _require_id(message.lease_id, "lease_id")
-    elif isinstance(message, CancelRequest):
+    elif isinstance(message, pb.CancelRequest):
         _require_id(message.owner_id, "owner_id")
         _require_id(message.task_id, "task_id")
-    elif isinstance(message, WatchResultsRequest):
+    elif isinstance(message, pb.WatchResultsRequest):
         _require_id(message.owner_id, "owner_id")
-    elif isinstance(message, AckResultRequest):
+    elif isinstance(message, pb.AckResultRequest):
         _require_id(message.owner_id, "owner_id")
         _require_id(message.task_id, "task_id")
-    elif isinstance(message, ObjectGetRequest):
+    elif isinstance(message, pb.ObjectGetRequest):
         if not message.HasField("object"):
             raise ProtocolError(INVALID_MESSAGE, "object is required")
         validate(message.object)
-    elif isinstance(message, ObjectChunk):
+    elif isinstance(message, pb.ObjectChunk):
         if message.sha256 and len(message.sha256) != 32:
             raise ProtocolError(INVALID_MESSAGE, "sha256 must be 32 bytes")
-    elif isinstance(message, StealRequest):
+    elif isinstance(message, pb.StealRequest):
         if not message.requester_node or message.limit == 0:
             raise ProtocolError(INVALID_MESSAGE, "invalid steal request")
-    elif isinstance(message, Error):
+    elif isinstance(message, pb.Error):
         if not message.code or not message.message:
             raise ProtocolError(INVALID_MESSAGE, "invalid protocol error")

@@ -1,108 +1,25 @@
-"""Wire protocol between the Python SDK and taskwire-agent.
+"""Taskwire's generated gRPC boundary and stable protocol semantics."""
 
-The control plane is gRPC over a Unix domain socket; this package re-exports
-the generated schema types, the client, semantic validation, and the stable
-error registry. Importing ``taskwire`` remains independent of the optional
-acceleration module.
-"""
-
-from taskwire.protocol.client import ControlClient, socket_target
 from taskwire.protocol.errors import (
     ERROR_RETRYABLE,
     GRPC_CODE,
     ProtocolError,
     error_from_rpc_error,
 )
-from taskwire.protocol.messages import (
-    AckResultRequest,
-    AgentMessage,
-    CancelRequest,
-    Completion,
-    Error,
-    Failure,
-    ForwardedCompletion,
-    ForwardedTask,
-    HeartbeatRequest,
-    LeasedTask,
-    ObjectChunk,
-    ObjectGetRequest,
-    ObjectRef,
-    PullRequest,
-    ResultNotification,
-    StatusRequest,
-    StatusSnapshot,
-    StealRequest,
-    SubmitResponse,
-    TaskCapability,
-    TaskEnvelope,
-    TaskQuery,
-    TaskRegistration,
-    TaskSnapshot,
-    TaskSnapshotEntry,
-    ValueRef,
-    WatchResultsRequest,
-    WorkerMessage,
-    WorkerRegistration,
+from taskwire.protocol.pb import control_pb2 as pb
+from taskwire.protocol.semantics import (
     decode_portable_value,
     encode_portable_value,
     validate,
-)
-from taskwire.protocol.session import (
-    METADATA_OWNER_ID,
-    METADATA_ROLE,
-    ROLE_ADMIN,
-    ROLE_RUNTIME,
-    ROLE_WORKER,
-    ConnectionState,
-    OwnerRegistry,
-    Session,
 )
 
 __all__ = [
     "ERROR_RETRYABLE",
     "GRPC_CODE",
-    "METADATA_OWNER_ID",
-    "METADATA_ROLE",
-    "ROLE_ADMIN",
-    "ROLE_RUNTIME",
-    "ROLE_WORKER",
-    "AckResultRequest",
-    "AgentMessage",
-    "CancelRequest",
-    "Completion",
-    "ConnectionState",
-    "ControlClient",
-    "Error",
-    "Failure",
-    "ForwardedCompletion",
-    "ForwardedTask",
-    "HeartbeatRequest",
-    "LeasedTask",
-    "ObjectChunk",
-    "ObjectGetRequest",
-    "ObjectRef",
-    "OwnerRegistry",
     "ProtocolError",
-    "PullRequest",
-    "ResultNotification",
-    "Session",
-    "StatusRequest",
-    "StatusSnapshot",
-    "StealRequest",
-    "SubmitResponse",
-    "TaskCapability",
-    "TaskEnvelope",
-    "TaskQuery",
-    "TaskRegistration",
-    "TaskSnapshot",
-    "TaskSnapshotEntry",
-    "ValueRef",
-    "WatchResultsRequest",
-    "WorkerMessage",
-    "WorkerRegistration",
     "decode_portable_value",
     "encode_portable_value",
     "error_from_rpc_error",
-    "socket_target",
+    "pb",
     "validate",
 ]

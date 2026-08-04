@@ -6,7 +6,7 @@ import grpc
 import pytest
 
 from harness import AgentHarness
-from taskwire.protocol import ControlClient
+from taskwire.ipc import ControlClient
 from taskwire.protocol.errors import error_from_rpc_error
 
 pytestmark = pytest.mark.integration

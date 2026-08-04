@@ -1,5 +1,21 @@
-"""Client-side IPC transport to taskwire-agent.
+"""gRPC clients for the local Taskwire agent."""
 
-Empty in Phase 0 — this package exists so the repository contract's source
-roots are real from the start. Phase 2 fills it in.
-"""
+from taskwire.ipc.client import (
+    METADATA_OWNER_ID,
+    METADATA_ROLE,
+    ROLE_ADMIN,
+    ROLE_RUNTIME,
+    ROLE_WORKER,
+    ControlClient,
+    socket_target,
+)
+
+__all__ = [
+    "METADATA_OWNER_ID",
+    "METADATA_ROLE",
+    "ROLE_ADMIN",
+    "ROLE_RUNTIME",
+    "ROLE_WORKER",
+    "ControlClient",
+    "socket_target",
+]

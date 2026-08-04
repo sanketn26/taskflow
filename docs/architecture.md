@@ -18,9 +18,28 @@ Go agent ───── TaskStateStore (SQLite default)
    └──── optional Kafka terminal-event outbox
 ```
 
-Identity travels in per-RPC metadata (`taskwire-role`, `taskwire-owner-id`) rather than a connection handshake, so a reconnect replays no connection-local state. Errors are gRPC statuses carrying a stable Taskwire error code in the status details.
+The gRPC boundary is deliberately thin. Generated messages enter handlers,
+semantic validation rejects invalid domain values, and handlers call task,
+worker, result, and object services. There is no second transport-neutral
+session framework layered over gRPC.
 
-Workers never connect to submitting applications. They register runtime, codecs, and exact task name/version capabilities on a long-lived `Work` stream; the agent filters by capability before label routing. Stream lifetime bounds lease ownership, so a dropped connection is an unambiguous signal to reap leases. Workers read and write objects through their local agent and complete under a fencing lease. Portable tasks use one value encoded with the shared msgpack profile or bytes. Python-specific calling conventions and cloudpickle remain explicit non-portable capabilities. The origin agent commits terminal state before notifying the Runtime. Owner ID plus cursor makes results replayable: `WatchResults` resumes after the last cursor a Runtime handled, across reconnection and Runtime restart until acknowledgement/retention.
+Local Runtime identity travels in per-RPC metadata (`taskwire-role`,
+`taskwire-owner-id`) and is admitted by Unix-socket ownership and permissions.
+Worker capability and lease state belong exclusively to one `Work` stream.
+Peer-agent identity is a separate authenticated transport concern introduced
+with clustering; a local caller cannot become a peer merely by supplying a role
+string. Errors are gRPC statuses carrying stable Taskwire error details.
+
+Workers never connect to submitting applications. The first `Work` message
+registers runtime, codecs, and a complete capability generation; later
+`update_tasks` messages replace that snapshot. Pulls are fenced by worker ID and
+generation. Stream lifetime bounds capability and lease ownership, so a dropped
+stream triggers recovery. Workers read and write objects through their local
+agent and complete under a fencing lease. Portable tasks use one value encoded
+with the shared MsgPack profile or bytes. Python-specific calling conventions
+and cloudpickle remain explicit non-portable capabilities. The origin agent
+commits terminal state before notifying the Runtime. Owner ID plus cursor makes
+results replayable across reconnects until acknowledgement or retention expiry.
 
 SQLite/filesystem requires no external service. Memory backends are explicitly ephemeral. PostgreSQL/S3 are not supported merely because interfaces leave room for future adapters — that support is Phase 6's own conformance-tested deliverable. Kafka is an optional downstream terminal-event integration, never Runtime result delivery or task completion storage.
 

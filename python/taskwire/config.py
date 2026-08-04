@@ -166,12 +166,12 @@ class IPCConfig:
     max_active_transfers: int
     max_transfer_bytes: int
     write_queue_size: int
+    max_message_size_mb: int
 
 
 @dataclass(frozen=True)
 class QueueConfig:
     max_attempts: int
-    max_frame_size_mb: int
     lease_ttl_ms: int
     reaper_interval_ms: int
 
@@ -330,6 +330,7 @@ def _decode_ipc(d: dict, path: str) -> IPCConfig:
             "max_active_transfers",
             "max_transfer_bytes",
             "write_queue_size",
+            "max_message_size_mb",
         }
     )
     _no_unknown(d, keys, path)
@@ -368,20 +369,20 @@ def _decode_ipc(d: dict, path: str) -> IPCConfig:
         write_queue_size=_as_positive_int(
             _req(d, "write_queue_size", path), _sub(path, "write_queue_size")
         ),
+        max_message_size_mb=_as_positive_int(
+            _req(d, "max_message_size_mb", path), _sub(path, "max_message_size_mb")
+        ),
     )
 
 
 def _decode_queue(d: dict, path: str) -> QueueConfig:
     keys = frozenset(
-        {"max_attempts", "max_frame_size_mb", "lease_ttl_ms", "reaper_interval_ms"}
+        {"max_attempts", "lease_ttl_ms", "reaper_interval_ms"}
     )
     _no_unknown(d, keys, path)
     return QueueConfig(
         max_attempts=_as_positive_int(
             _req(d, "max_attempts", path), _sub(path, "max_attempts")
-        ),
-        max_frame_size_mb=_as_positive_int(
-            _req(d, "max_frame_size_mb", path), _sub(path, "max_frame_size_mb")
         ),
         lease_ttl_ms=_as_positive_int(
             _req(d, "lease_ttl_ms", path), _sub(path, "lease_ttl_ms")
@@ -809,10 +810,10 @@ def _validate(cfg: Config) -> None:
     if cfg.queue.lease_ttl_ms < 1000:
         raise ConfigError("queue.lease_ttl_ms", "must be >= 1000")
 
-    if cfg.ipc.object_chunk_bytes > cfg.queue.max_frame_size_mb * 1024 * 1024:
+    if cfg.ipc.object_chunk_bytes > cfg.ipc.max_message_size_mb * 1024 * 1024:
         raise ConfigError(
             "ipc.object_chunk_bytes",
-            "must not exceed queue.max_frame_size_mb converted to bytes",
+            "must not exceed ipc.max_message_size_mb converted to bytes",
         )
 
     if cfg.storage.state.type not in _STATE_BACKENDS:

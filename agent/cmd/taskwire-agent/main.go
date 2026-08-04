@@ -53,7 +53,7 @@ func main() {
 		}
 	}
 
-	maxMessageBytes := int(cfg.Queue.MaxFrameSizeMB * 1024 * 1024)
+	maxMessageBytes := int(cfg.IPC.MaxMessageSizeMB * 1024 * 1024)
 	srv, err := controlserver.New(cfg.Socket, version, maxMessageBytes)
 	if err != nil {
 		log.Fatalf("taskwire-agent: %v", err)

@@ -26,19 +26,15 @@ const (
 // methodRoles lists the roles permitted to call each RPC. Method names are
 // the full gRPC paths the interceptors receive.
 var methodRoles = map[string][]string{
-	"/taskwire.v1.TaskwireControl/Submit":            {RoleRuntime},
-	"/taskwire.v1.TaskwireControl/WatchResults":      {RoleRuntime},
-	"/taskwire.v1.TaskwireControl/AckResult":         {RoleRuntime},
-	"/taskwire.v1.TaskwireControl/Cancel":            {RoleRuntime},
-	"/taskwire.v1.TaskwireControl/QueryTasks":        {RoleRuntime},
-	"/taskwire.v1.TaskwireControl/RegisterTasks":     {RoleWorker},
-	"/taskwire.v1.TaskwireControl/Work":              {RoleWorker},
-	"/taskwire.v1.TaskwireControl/PutObject":         {RoleRuntime, RoleWorker},
-	"/taskwire.v1.TaskwireControl/GetObject":         {RoleRuntime, RoleWorker},
-	"/taskwire.v1.TaskwireControl/Status":            {RoleAdmin, RoleRuntime, RoleWorker},
-	"/taskwire.v1.TaskwireControl/ForwardTask":       {RoleRuntime},
-	"/taskwire.v1.TaskwireControl/ForwardCompletion": {RoleRuntime},
-	"/taskwire.v1.TaskwireControl/Steal":             {RoleRuntime},
+	"/taskwire.v1.TaskwireControl/Submit":       {RoleRuntime},
+	"/taskwire.v1.TaskwireControl/WatchResults": {RoleRuntime},
+	"/taskwire.v1.TaskwireControl/AckResult":    {RoleRuntime},
+	"/taskwire.v1.TaskwireControl/Cancel":       {RoleRuntime},
+	"/taskwire.v1.TaskwireControl/QueryTasks":   {RoleRuntime},
+	"/taskwire.v1.TaskwireControl/Work":         {RoleWorker},
+	"/taskwire.v1.TaskwireControl/PutObject":    {RoleRuntime, RoleWorker},
+	"/taskwire.v1.TaskwireControl/GetObject":    {RoleRuntime, RoleWorker},
+	"/taskwire.v1.TaskwireControl/Status":       {RoleAdmin, RoleRuntime, RoleWorker},
 }
 
 // CallerIdentity is the per-RPC identity decoded from request metadata.

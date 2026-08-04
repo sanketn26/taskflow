@@ -11,35 +11,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type ObjectRef = pb.ObjectRef
-type ValueRef = pb.ValueRef
-type PullRequest = pb.PullRequest
-type TaskCapability = pb.TaskCapability
-type TaskRegistration = pb.TaskRegistration
-type TaskQuery = pb.TaskQuery
-type TaskSnapshotEntry = pb.TaskSnapshotEntry
-type TaskSnapshot = pb.TaskSnapshot
-type TaskEnvelope = pb.TaskEnvelope
-type LeasedTask = pb.LeasedTask
-type Completion = pb.Completion
-type ForwardedTask = pb.ForwardedTask
-type ForwardedCompletion = pb.ForwardedCompletion
-type Failure = pb.Failure
-type ResultNotification = pb.ResultNotification
-type StatusSnapshot = pb.StatusSnapshot
-type Error = pb.Error
-type HeartbeatRequest = pb.HeartbeatRequest
-type CancelRequest = pb.CancelRequest
-type ObjectGetRequest = pb.ObjectGetRequest
-type ObjectChunk = pb.ObjectChunk
-type StealRequest = pb.StealRequest
-type StatusRequest = pb.StatusRequest
-type WorkerMessage = pb.WorkerMessage
-type AgentMessage = pb.AgentMessage
-type WorkerRegistration = pb.WorkerRegistration
-type WatchResultsRequest = pb.WatchResultsRequest
-type AckResultRequest = pb.AckResultRequest
-
 func requireID(value []byte, field string) error {
 	if len(value) != 16 {
 		return NewProtocolError(InvalidMessage, field+" must be 16 bytes")
