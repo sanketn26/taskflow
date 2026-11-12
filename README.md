@@ -87,6 +87,19 @@ Solid path: single-node MVP    Side paths: optional post-MVP capabilities
 
 The agent replaces an external broker for the core workflow. Applications submit task references and small values—or object references for larger values—over a protected local socket. The control plane is gRPC, defined by [`proto/taskwire/v1/control.proto`](proto/taskwire/v1/control.proto), so a client in any gRPC-capable language is generated rather than hand-written. Workers pull tasks and return fenced result references to the agent; they never connect back to applications. Task state and immutable objects use separate storage interfaces, with SQLite and the filesystem as zero-infrastructure defaults. See the [storage architecture](docs/storage.md).
 
+## Development
+
+Requires [uv](https://docs.astral.sh/uv/) and Go (version pinned in `go.mod`).
+
+```bash
+make sync          # uv sync: creates .venv from uv.lock (Python 3.12 via .python-version)
+make lint unit     # go vet + ruff, go test + pytest
+make integration   # builds and drives the agent end to end
+make smoke-wheel   # builds the wheel (uv build) and tests it in a clean venv
+```
+
+Add Python dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`) so `uv.lock` stays in sync.
+
 ## Contributing
 
 Contributions should follow the phase acceptance gates and preserve the protocol/config parity requirements in the plan review.

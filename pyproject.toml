@@ -1,17 +1,16 @@
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
 
-[tool.poetry]
+[project]
 name = "taskwire"
 version = "0.1.0"
 description = "High-performance distributed task execution — pythonic tasks, Go-powered runtime, no broker required"
-authors = ["Sanket Naik <sanketn@gmail.com>"]
+authors = [{ name = "Sanket Naik", email = "sanketn@gmail.com" }]
 license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
-homepage = "https://github.com/sanketn26/taskwire"
-repository = "https://github.com/sanketn26/taskwire.git"
-documentation = "https://github.com/sanketn26/taskwire/tree/main/docs"
+requires-python = ">=3.11"
 keywords = ["tasks", "distributed", "parallel", "worker", "queue", "async"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
@@ -20,33 +19,45 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
-packages = [{include = "taskwire", from = "python"}]
-# The Go agent binary is staged to python/taskwire/bin/ by `make wheel`
-# (never committed — see .gitignore) and declared here so poetry-core bundles
-# it into the wheel. This produces a single-host-platform wheel; multi-platform
-# wheel tagging is a follow-up beyond Phase 0's scope.
-include = [
-  { path = "python/taskwire/bin/taskwire-agent", format = "wheel" },
+dependencies = [
+  "cloudpickle>=3.1,<4",
+  "pyyaml>=6.0,<7",
+  "msgpack>=1.2,<2",
+  # Must be >= the protobuf version the committed *_pb2.py was generated with;
+  # bump together with `make proto`.
+  "protobuf>=7.35.1,<8",
+  "grpcio>=1.85,<2",
+  "grpcio-status>=1.85,<2",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.11"
-cloudpickle = "^3.0"
-pyyaml = "^6.0"
-msgpack = "^1.0"
-protobuf = ">=6.33.5,<7"
-grpcio = "^1.83"
-grpcio-status = "^1.83"
-confluent-kafka = {version = "^2.5", optional = true}
+[project.optional-dependencies]
+kafka = ["confluent-kafka>=2.16,<3"]
 
-[tool.poetry.extras]
-kafka = ["confluent-kafka"]
+[project.urls]
+Homepage = "https://github.com/sanketn26/taskwire"
+Repository = "https://github.com/sanketn26/taskwire.git"
+Documentation = "https://github.com/sanketn26/taskwire/tree/main/docs"
+Issues = "https://github.com/sanketn26/taskwire/issues"
+Changelog = "https://github.com/sanketn26/taskwire/blob/main/CHANGELOG.md"
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.3"
-pytest-cov = "*"
-ruff = "^0.4"
-build = "^1.2"
+[dependency-groups]
+dev = [
+  "pytest>=9.2",
+  "pytest-cov>=7.1",
+  "ruff>=0.17",
+  "grpcio-tools>=1.85",  # `make proto`
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/taskwire"]
+# The Go agent binary is staged to python/taskwire/bin/ by `make wheel`.
+# It is gitignored (never committed), so list it as an artifact to force
+# inclusion. This yields a single-host-platform wheel; per-platform tagging
+# is a follow-up.
+artifacts = ["python/taskwire/bin/taskwire-agent"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/.github", "/.venv", "/agent/bin", "/python/taskwire/bin"]
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
@@ -61,7 +72,7 @@ markers = [
 
 [tool.ruff]
 extend-exclude = ["python/taskwire/protocol/pb"]
-# Matches [tool.poetry.dependencies] python = ">=3.11". Without this, ruff
+# Matches requires-python = ">=3.11". Without this, ruff
 # assumes an older target and misclassifies stdlib modules added in 3.11
 # (notably tomllib) as third-party imports.
 target-version = "py311"
@@ -72,8 +83,6 @@ target-version = "py311"
 [tool.ruff.lint.isort]
 known-first-party = ["taskwire", "harness"]
 
-[tool.poetry.urls]
-homepage = "https://github.com/sanketn26/taskwire"
-repository = "https://github.com/sanketn26/taskwire.git"
-bug-tracker = "https://github.com/sanketn26/taskwire/issues"
-changelog = "https://github.com/sanketn26/taskwire/blob/main/CHANGELOG.md"
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]  # line length is owned by `ruff format`

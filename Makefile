@@ -1,20 +1,22 @@
-.PHONY: all format lint unit integration build-agent build-sdk wheel smoke-wheel \
+.PHONY: all sync format lint unit integration build-agent build-sdk wheel smoke-wheel \
 	test bench clean agent-run proto help
 
 REPO_ROOT := $(shell git rev-parse --show-toplevel 2>/dev/null || pwd)
 VERSION   := $(shell grep -m1 '^version' $(REPO_ROOT)/pyproject.toml | cut -d'"' -f2)
-PYTHON    ?= python3
+UV        ?= uv
+PYTHON    ?= $(UV) run python
 
 all: help
 
 help:
 	@echo "Targets:"
+	@echo "  sync           Create .venv and install all deps from uv.lock"
 	@echo "  format         Format all code (Go + Python)"
 	@echo "  lint           Lint all code (Go + Python)"
 	@echo "  unit           Run unit tests (Go + Python), no built agent required"
 	@echo "  integration    Run integration tests (builds and drives the agent)"
 	@echo "  build-agent    Build the Go sidecar binary to agent/bin/"
-	@echo "  build-sdk      Install the Python SDK in editable mode"
+	@echo "  build-sdk      Alias for sync (SDK is installed editable)"
 	@echo "  wheel          Build a wheel bundling the built agent binary"
 	@echo "  smoke-wheel    Install the wheel into a clean venv and smoke-test it"
 	@echo "  bench          Run benchmarks"
@@ -25,7 +27,8 @@ help:
 # --- Protocol codegen -------------------------------------------------------
 
 # Bindings are committed, so this is only needed after editing control.proto.
-# Requires protoc-gen-go, protoc-gen-go-grpc (go install) and grpcio-tools (pip).
+# Requires protoc-gen-go, protoc-gen-go-grpc (go install); grpcio-tools is in
+# the dev dependency group.
 proto:
 	cd $(REPO_ROOT) && $(PYTHON) -m grpc_tools.protoc -I proto \
 		--go_out=. --go_opt=module=github.com/sanketn26/taskwire \
@@ -52,8 +55,10 @@ build-agent:
 
 # --- SDK (Python 3.11-3.13) -------------------------------------------------
 
-build-sdk:
-	cd $(REPO_ROOT) && $(PYTHON) -m pip install -e .
+sync:
+	cd $(REPO_ROOT) && $(UV) sync --all-extras --locked
+
+build-sdk: sync
 
 # --- Formatting / linting ----------------------------------------------------
 
@@ -82,17 +87,17 @@ bench:
 # --- Wheel packaging ----------------------------------------------------
 
 # Stages the built agent binary at python/taskwire/bin/ (gitignored) so
-# pyproject.toml's [tool.poetry] include picks it up. This yields a
+# pyproject.toml's hatch `artifacts` setting picks it up. This yields a
 # single-host-platform wheel; per-platform wheel tagging is a follow-up.
 wheel: build-agent
 	mkdir -p $(REPO_ROOT)/python/taskwire/bin
 	cp $(REPO_ROOT)/agent/bin/taskwire-agent $(REPO_ROOT)/python/taskwire/bin/taskwire-agent
-	cd $(REPO_ROOT) && $(PYTHON) -m build --wheel
+	cd $(REPO_ROOT) && $(UV) build --wheel
 
 smoke-wheel: wheel
 	rm -rf $(REPO_ROOT)/.smoke-venv
-	$(PYTHON) -m venv $(REPO_ROOT)/.smoke-venv
-	$(REPO_ROOT)/.smoke-venv/bin/pip install --quiet $(REPO_ROOT)/dist/*.whl
+	$(UV) venv --quiet $(REPO_ROOT)/.smoke-venv
+	$(UV) pip install --quiet --python $(REPO_ROOT)/.smoke-venv $(REPO_ROOT)/dist/*.whl
 	cd /tmp && $(REPO_ROOT)/.smoke-venv/bin/python -c "\
 import subprocess, sys; \
 import taskwire; \

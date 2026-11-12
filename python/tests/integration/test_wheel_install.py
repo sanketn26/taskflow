@@ -8,7 +8,6 @@ give us for free and therefore prove nothing.
 
 import shutil
 import subprocess
-import sys
 import tomllib
 import venv
 from pathlib import Path
@@ -22,7 +21,7 @@ pytestmark = pytest.mark.integration
 
 def _pyproject_version() -> str:
     with (REPO_ROOT / "pyproject.toml").open("rb") as f:
-        return tomllib.load(f)["tool"]["poetry"]["version"]
+        return tomllib.load(f)["project"]["version"]
 
 
 _SMOKE_SCRIPT = """
@@ -51,13 +50,20 @@ def _run_isolated(python_exe: Path, cwd: Path) -> None:
     assert "OK" in result.stdout
 
 
+def _uv() -> str:
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is required to build the wheel")
+    return uv
+
+
 def test_wheel_install_works_without_source_checkout(tmp_path, built_agent_binary):
     staged_bin = REPO_ROOT / "python" / "taskwire" / "bin" / "taskwire-agent"
     staged_bin.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(built_agent_binary, staged_bin)
     try:
         subprocess.run(
-            [sys.executable, "-m", "build", "--wheel", "--outdir", str(tmp_path)],
+            [_uv(), "build", "--wheel", "--out-dir", str(tmp_path)],
             cwd=REPO_ROOT,
             check=True,
             capture_output=True,

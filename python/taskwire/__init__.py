@@ -13,7 +13,7 @@ except _metadata.PackageNotFoundError:
 
     _pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     with _pyproject.open("rb") as _f:
-        __version__ = tomllib.load(_f)["tool"]["poetry"]["version"]
+        __version__ = tomllib.load(_f)["project"]["version"]
 
 from taskwire.agent_locate import AgentNotFoundError, find_agent_binary
 
