@@ -14,10 +14,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -25,85 +21,32 @@ jobs:
       - run: make lint
 
   unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv sync --all-extras --locked
-      - run: make unit
-      - if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-test-logs
-          path: |
-            **/*.log
-          if-no-files-found: ignore
-
-  smoke:
-    needs: [lint, unit]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13"]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
-      - name: Build wheel and smoke test in a clean venv
-        run: make smoke-wheel
-      - if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: |
-            dist/
-            **/*.log
-          if-no-files-found: ignore
+      - run: uv sync --all-extras --locked
+      - run: make unit
 
-  integration:
+  packaging:
     needs: [lint, unit]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
       - run: uv sync --all-extras --locked
-      - name: Build wheel and install into a clean environment
-        run: |
-          make wheel
-          uv venv /tmp/it-venv
-          uv pip install --quiet --python /tmp/it-venv dist/*.whl pytest
-      - name: Run integration tests against the installed artifact
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-        run: /tmp/it-venv/bin/python -m pytest python/tests/integration -v -m integration
-      - if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: integration-logs
-          path: |
-            **/*.log
-            dist/
-          if-no-files-found: ignore
+      - run: make packaging
+
+  # The PostgreSQL-backed integration job is added in Phase 0
+  # (docs/phases/phase-0-repository.md) together with the first database test.

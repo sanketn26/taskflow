@@ -1,78 +1,151 @@
 # Taskwire Architecture Overview
 
-This document is a non-normative orientation guide. All requirements, schemas, failure semantics, tests, and exit gates are contained in the phase documents; implementation must not depend on this overview.
+This document is a non-normative orientation guide. Requirements, schemas, failure semantics, tests, and exit gates are in the phase documents. If this overview differs from a phase, the phase wins.
 
-## System Shape
-
-Taskwire is a brokerless, at-least-once task system with a language-neutral execution protocol and a Go control plane. The control plane is **gRPC over a local Unix domain socket**, defined by `proto/taskwire/v1/control.proto`: any language with a gRPC implementation can generate a working client from that file alone. The v0.1 Python Runtime submits registered task identities and input references to a Go agent. The agent owns transactional task state, leases, immutable objects, capability-aware worker pools, replayable results, and optional clustering/integrations. Python is the first worker runtime; Node.js and Go workers are planned bindings of the same service rather than separate schedulers.
+## System shape
 
 ```text
-Python Runtime (v0.1; later Node.js/Go clients)
-      │ gRPC over Unix socket: Submit, Cancel, WatchResults, QueryTasks
-      ▼
-Go agent ───── TaskStateStore (SQLite default)
-   │   └────── ObjectStore (filesystem default)
-   │
-   ├──── managed worker pools: Python; later Node.js and Go (Work stream)
-   ├──── optional authenticated peer agents
-   └──── optional Kafka terminal-event outbox
+                 ┌──────────────────────── Kubernetes ────────────────────────┐
+                 │                                                            │
+  application    │   worker pool "cpu"        worker pool "io"                │
+  pods           │   Deployment + KEDA        Deployment + KEDA               │
+  (Client SDK)   │   ┌────────┐ ┌────────┐    ┌────────┐                      │
+       │         │   │ worker │ │ worker │    │ worker │    controller        │
+       │         │   └───┬────┘ └───┬────┘    └───┬────┘    Deployment (2)    │
+       │         │       │          │             │         reap · retain ·   │
+       │         │       │          │             │         /metrics          │
+       │         │       │          │             │              │            │
+       └─────────┼───────┴──────────┴─────────────┴──────────────┘            │
+                 │                        │ Backend interface                 │
+                 └────────────────────────┼───────────────────────────────────┘
+                                          ▼
+                                    PostgreSQL            S3-compatible store
+                                    (first backend)       large values only
 ```
 
-The gRPC boundary is deliberately thin. Generated messages enter handlers,
-semantic validation rejects invalid domain values, and handlers call task,
-worker, result, and object services. There is no second transport-neutral
-session framework layered over gRPC.
+There are four moving parts, and all of them are the same Python package:
 
-Local Runtime identity travels in per-RPC metadata (`taskwire-role`,
-`taskwire-owner-id`) and is admitted by Unix-socket ownership and permissions.
-Worker capability and lease state belong exclusively to one `Work` stream.
-Peer-agent identity is a separate authenticated transport concern introduced
-with clustering; a local caller cannot become a peer merely by supplying a role
-string. Errors are gRPC statuses carrying stable Taskwire error details.
+| Part | Runs as | Responsibility |
+|---|---|---|
+| Client SDK | Inside application pods | Submit tasks, wait for results, cancel |
+| Worker | `taskwire worker` in a Deployment per pool | Claim, execute, heartbeat, complete |
+| Controller | `taskwire controller` in a small Deployment | Reap lost work, enforce retention, export queue metrics |
+| Migrations | `taskwire migrate` as a Helm hook Job | Install and upgrade the backend schema |
 
-Workers never connect to submitting applications. The first `Work` message
-registers runtime, codecs, and a complete capability generation; later
-`update_tasks` messages replace that snapshot. Pulls are fenced by worker ID and
-generation. Stream lifetime bounds capability and lease ownership, so a dropped
-stream triggers recovery. Workers read and write objects through their local
-agent and complete under a fencing lease. Portable tasks use one value encoded
-with the shared MsgPack profile or bytes. Python-specific calling conventions
-and cloudpickle remain explicit non-portable capabilities. The origin agent
-commits terminal state before notifying the Runtime. Owner ID plus cursor makes
-results replayable across reconnects until acknowledgement or retention expiry.
+No Taskwire process sits between a pod and the backend. The controller is off the task path: if it is down, tasks still run, but lost work is not recovered and queue metrics stop.
 
-SQLite/filesystem requires no external service. Memory backends are explicitly ephemeral. PostgreSQL/S3 are not supported merely because interfaces leave room for future adapters — that support is Phase 6's own conformance-tested deliverable. Kafka is an optional downstream terminal-event integration, never Runtime result delivery or task completion storage.
+## The backend contract
 
-## Delivery Sequence
+Taskwire guarantees a fixed set of semantics and reaches storage only through one interface that provides them. The interface is defined in [Phase 1](phases/phase-1-backend-contract.md).
+
+| Guarantee | Meaning |
+|---|---|
+| Durable submit | A submitted task survives the loss of any Taskwire process |
+| Idempotent submit | Retrying a submit with the same task ID creates one task |
+| Exclusive claim | A task is held by at most one lease at a time |
+| Fencing | Only the current lease can record an outcome |
+| Backend clock | Expiry and scheduling are judged by the backend, never by a pod's clock |
+| Bounded retry and release | Retries and drains are both capped |
+| Atomic cancel | A cancel racing a claim has exactly one outcome |
+| Terminal is final | A finished task never changes |
+
+Three mechanisms hold the guarantees in place:
+
+1. **A conformance suite** runs against every backend in CI. A backend is supported only if it passes.
+2. **A startup assertion** runs in every process before it does any work. It checks the backend's declared capabilities and settings, and for workers and the controller it probes the guarantees live against the deployed backend. A process that fails the assertion exits and never reports ready.
+3. **An in-memory reference backend** serves as the model that other backends are compared against, and as the backend for unit tests.
+
+PostgreSQL is the only production backend. The interface exists so that the semantics are stated independently of it, tested independently of it, and portable to another store that can provide atomic conditional writes, durability, and its own clock. No second production backend is planned.
+
+## Task lifecycle
 
 ```text
-serialize/store input
-→ durable task Create
-→ Submit response
-→ exclusive Claim + fencing lease
-→ execute with heartbeat
-→ immutable result Put
-→ fenced terminal transaction + result cursor
-→ WatchResults notification
-→ AckResult
+            submit                claim                 complete
+  (new) ──────────► queued ──────────────► running ──────────────► succeeded
+                      ▲  │                   │  │
+                      │  │ cancel            │  │ fail, attempts exhausted
+                      │  ▼                   │  └──────────────────► failed
+                      │ cancelled            │
+                      │                      │ fail (retryable) · worker lost · timeout · release
+                      └──────────────────────┘   requeued with backoff
 ```
 
-Execution is at least once, not exactly once. Cancellation succeeds only while queued at the current owner. Cluster partitions and expired leases may create duplicates; terminal writes and remote completions are fenced/idempotent.
+- **Submit** is durable when the call returns. Task IDs are generated by the client, so a retried submit is idempotent.
+- **Claim** filters by pool and by the exact `name@version` identities the worker has registered. During a rolling deploy, old workers never receive tasks they cannot run.
+- **Liveness and fencing.** A worker heartbeats once for itself, not once per task. If its liveness lapses, the controller requeues everything it held. Each claim also carries a new lease ID, and outcome writes are conditional on it, so a worker that was paused or partitioned cannot overwrite a later attempt.
+- **Timeout.** A task may set a maximum run time. The worker stops the attempt when it passes, and the controller enforces it if the worker cannot.
+- **Retry.** A retryable failure, a lost worker, or a timeout requeues the task with exponential backoff until `max_attempts`, then the task fails.
+- **Release.** A draining worker returns unfinished tasks without consuming an attempt, up to a cap, so a pool that scales down often cannot restart a long task forever.
+- **Delay and priority.** `run_after` defers a task; `priority` orders tasks within a pool.
+- **Cancel.** Queued tasks cancel atomically. For running tasks the request is delivered on the next heartbeat and is cooperative.
 
-## Authoritative Phase Set
+Execution is at least once. Outcome recording is exactly once per task.
 
-1. [Phase 0 — Repository, Packaging, and Test Spine](phases/phase-0-repository-packaging.md)
-2. [Phase 1 — Protocol and Configuration](phases/phase-1-protocol-config.md)
-3. [Phase 2 — Go Agent Core](phases/phase-2-sidecar-core.md)
-4. [Phase 3 — Python Worker and Single-Node E2E](phases/phase-3-worker-e2e.md)
-5. [Phase 4 — Python SDK](phases/phase-4-python-sdk.md)
-6. [Phase 5 — Clustering](phases/phase-5-clustering.md)
-7. [Phase 6 — Distributed Storage Backends](phases/phase-6-distributed-storage-backends.md)
-8. [Phase 7 — Kafka Result Integration](phases/phase-7-queue-delivery.md)
-9. [Phase 8 — Hardening and Release](phases/phase-8-hardening-release.md)
-10. [Phase 9 — Examples and Adoption](phases/phase-9-examples-use-cases.md)
-11. [Phase 10 — Node.js Worker and SDK](phases/phase-10-nodejs-runtime.md)
-12. [Phase 11 — Go Worker and SDK](phases/phase-11-go-runtime.md)
-13. [Phase 12 — Admin Console (Flower-class)](phases/phase-12-admin-console.md)
+## Worker model
 
-Each phase is independently implementation-ready: it declares its own contract, required tests, implementation order, and exit gate. If this overview differs from a phase, the phase wins.
+A worker pod runs one supervisor process and one or more executor processes.
+
+- **The supervisor** owns the backend connection. It claims tasks, heartbeats, enforces timeouts, and records outcomes. It runs no user code, so task code that holds the GIL or blocks in a native library cannot starve the heartbeat.
+- **Executor processes** run user code in one of three modes, chosen per pool:
+
+| Mode | Runs | Suited to |
+|---|---|---|
+| `process` | One task per process | CPU-bound work; strongest isolation; a timed-out task is killed cleanly |
+| `thread` | Many tasks per process on threads | Blocking I/O in ordinary synchronous code |
+| `async` | Many `async def` tasks per process on one event loop | High-concurrency I/O such as API and model calls |
+
+- An executor process that crashes fails only the attempts it was running; the supervisor reports them and starts a replacement.
+- On `SIGTERM` the worker stops claiming, lets running tasks finish within the pod's termination grace period, releases what is left, and exits.
+
+Workers poll for work by default. An event-driven wake-up is an optional backend capability.
+
+## Results
+
+A client reads results by task ID and waits by polling with backoff, in bounded batches. After a client restart, `reattach` needs only the task IDs or the batch ID. Results are kept for a retention period, which is set separately for succeeded and failed tasks, and then purged by the controller.
+
+Values up to the inline limit are stored in the backend. Larger values go to an S3-compatible object store, with a checksummed reference in the backend (Phase 6). Clients and workers talk to the object store directly.
+
+## Kubernetes integration
+
+| Concern | Mechanism |
+|---|---|
+| Deployment | Helm chart: controller, migration Job, and a worker-pool template |
+| Configuration | Environment variables from ConfigMaps and Secrets; no configuration file |
+| Scaling | KEDA `ScaledObject` per pool, driven by the controller's Prometheus metrics |
+| Draining | `SIGTERM` handling and bounded release, as above |
+| Health | Liveness and readiness endpoints; readiness requires a passed startup assertion |
+| Identity | Pod name from the downward API as the worker ID |
+| Evictions and spot loss | Worker liveness lapses and the controller requeues; no operator action |
+
+The worker image is the user's own application image with `taskwire` installed. The controller uses the published Taskwire image. There are no custom resources and no operator in the first versions.
+
+## Observability
+
+Metrics are exposed in Prometheus format from two places.
+
+| Source | Metrics | Notes |
+|---|---|---|
+| Controller | Queue depth, scheduled count, running count, oldest queued age, live workers, work reaped, tasks purged | Read from the backend on an interval. Replicas report the same values, so aggregate with `max`, not `sum` |
+| Worker | Task duration, queue wait, end-to-end latency, outcomes, in-flight tasks, heartbeat failures, backend call latency | Recorded by the supervisor, so no multi-process metrics mode is needed |
+
+Labels are bounded to pool, task name, and outcome. Task IDs, owner IDs, and task versions are never labels.
+
+The Helm chart ships a `ServiceMonitor` and `PodMonitor`, a `PrometheusRule` with default alerts, and a Grafana dashboard. Logs are structured JSON carrying task ID, attempt, and pool. Each task carries a `trace_context` field reserved for W3C trace propagation; tracing itself is unscheduled.
+
+## Connections and scale
+
+With the PostgreSQL backend, a worker pod holds one connection and a client process holds a small pool. Polling is the default precisely so that a transaction-mode connection pooler can sit in front of the database; a large fleet needs one.
+
+Task rows are written at submit, claim, and finish. Heartbeats touch one row per worker, and values are stored off the task table, which keeps churn on the hot table low. Whether that is enough, or the table needs partitioning, is decided from benchmark data in Phase 7.
+
+## Authoritative phase set
+
+0. [Phase 0 — Repository and Test Spine](phases/phase-0-repository.md)
+1. [Phase 1 — Backend Contract](phases/phase-1-backend-contract.md)
+2. [Phase 2 — Worker](phases/phase-2-worker.md)
+3. [Phase 3 — Client SDK](phases/phase-3-client-sdk.md)
+4. [Phase 4 — Controller and Observability](phases/phase-4-controller-observability.md)
+5. [Phase 5 — Kubernetes Packaging](phases/phase-5-kubernetes.md)
+6. [Phase 6 — Object Storage](phases/phase-6-object-storage.md)
+7. [Phase 7 — Hardening and Release](phases/phase-7-hardening-release.md)
+8. [Phase 8 — Examples and Adoption](phases/phase-8-examples.md)

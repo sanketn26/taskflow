@@ -1,8 +1,7 @@
 """Seeded, reproducible chaos-action timeline.
 
-Phase 0 only proves the timeline mechanics with a stub agent; later phases
-add real fault injectors (process kill, network partition, disk pressure,
-resource exhaustion) that record through this same timeline.
+Fault injectors (worker kill, pod eviction, database connection loss) record
+through this timeline so a failing run can be replayed from its seed.
 """
 
 from __future__ import annotations

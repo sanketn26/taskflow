@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "taskwire"
 version = "0.1.0"
-description = "High-performance distributed task execution — pythonic tasks, Go-powered runtime, no broker required"
+description = "Kubernetes-native distributed task execution for Python, backed by PostgreSQL"
 authors = [{ name = "Sanket Naik", email = "sanketn@gmail.com" }]
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.11"
-keywords = ["tasks", "distributed", "parallel", "worker", "queue", "async"]
+keywords = ["tasks", "distributed", "parallel", "worker", "queue", "kubernetes", "postgresql"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Programming Language :: Python :: 3",
@@ -19,19 +19,9 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
-dependencies = [
-  "cloudpickle>=3.1,<4",
-  "pyyaml>=6.0,<7",
-  "msgpack>=1.2,<2",
-  # Must be >= the protobuf version the committed *_pb2.py was generated with;
-  # bump together with `make proto`.
-  "protobuf>=7.35.1,<8",
-  "grpcio>=1.85,<2",
-  "grpcio-status>=1.85,<2",
-]
-
-[project.optional-dependencies]
-kafka = ["confluent-kafka>=2.16,<3"]
+# Runtime dependencies are added by the phase that first uses them
+# (docs/phases/). Nothing is implemented yet, so nothing is required.
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/sanketn26/taskwire"
@@ -45,33 +35,25 @@ dev = [
   "pytest>=9.2",
   "pytest-cov>=7.1",
   "ruff>=0.17",
-  "grpcio-tools>=1.85",  # `make proto`
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["python/taskwire"]
-# The Go agent binary is staged to python/taskwire/bin/ by `make wheel`.
-# It is gitignored (never committed), so list it as an artifact to force
-# inclusion. This yields a single-host-platform wheel; per-platform tagging
-# is a follow-up.
-artifacts = ["python/taskwire/bin/taskwire-agent"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["/.github", "/.venv", "/agent/bin", "/python/taskwire/bin"]
+exclude = ["/.github", "/.venv"]
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
 pythonpath = ["python", "."]
 markers = [
-  "integration: requires a built taskwire-agent binary and drives it end to end",
-  "chaos: injects seeded process/network/storage/resource faults",
-  "cluster: requires a multi-agent cluster topology",
-  "kafka: requires a Kafka broker for delivery-mode tests",
-  "resource: exercises resource-pressure or soak scenarios",
+  "integration: requires a PostgreSQL instance (TASKWIRE_TEST_DATABASE_URL)",
+  "packaging: builds the wheel and installs it into a clean environment",
+  "chaos: injects seeded process/database faults",
+  "kubernetes: requires a kind cluster",
 ]
 
 [tool.ruff]
-extend-exclude = ["python/taskwire/protocol/pb"]
 # Matches requires-python = ">=3.11". Without this, ruff
 # assumes an older target and misclassifies stdlib modules added in 3.11
 # (notably tomllib) as third-party imports.

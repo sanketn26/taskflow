@@ -1,108 +1,62 @@
 # Taskwire
 
-Taskwire is a lightweight, opinionated, optionally distributed task processing framework for Python. It is designed to help developers manage and execute tasks efficiently across multiple systems. With Taskwire, you can easily define, schedule, and monitor tasks, making it an ideal choice for building scalable and reliable distributed applications.
+Taskwire is a Kubernetes-native library for durable, distributed parallel processing in Python. It guarantees a fixed set of task semantics through a backend interface and asserts them at start-up. PostgreSQL is the production backend and the only stateful dependency: there is no broker, no result backend, and no server between your pods and the database.
 
-## Features
+## Project status
 
-- **Lightweight**: Minimal overhead, ensuring high performance.
-- **Opinionated**: Provides best practices and sensible defaults.
-- **Distributed** (optional): Seamlessly handles task distribution across multiple nodes.
-- **Pythonic**: Designed to work naturally with Python's syntax and conventions.
+**Design stage. Nothing that executes a task exists yet.** The repository contains the design, the phased implementation plan, and the packaging and test scaffolding. Do not install it expecting a working library.
 
-## Project Status
+The design was reset in November 2026 from an earlier agent-based plan; [docs/decisions.md](docs/decisions.md) records what changed and why.
 
-Taskwire is currently an architecture and implementation plan; the package and agent described below have not been implemented in this repository yet. Do not rely on the placeholder `pip install` workflow for production use.
+## The idea
 
-Start with the [vision](docs/vision.md) (why Taskwire exists), the [architecture](docs/architecture.md), the [critical plan review](docs/implementation-plan-review.md), and the phase documents under `docs/phases/`. Each phase ends with an **Implementation Guide** (file map, code sketches, done checklist, review template). The index and “how to request a phase review” live in [docs/phases/README.md](docs/phases/README.md). [Phase 9](docs/phases/phase-9-examples-use-cases.md) defines the quick start, runnable examples, and recommended use cases that will accompany the implementation.
+```python
+from taskwire import Client, task
 
-The corrected delivery order makes Phases 0–4 the single-node MVP. Clustering and Kafka delivery are separate post-MVP feature gates.
+@task(name="reports.render", version="1", pool="cpu")
+def render(doc_id: str) -> dict: ...
 
-## How the Idea Fits Together
-
-```mermaid
-flowchart LR
-    DEV["Python application<br/><code>@task</code> + <code>Runtime</code>"]
-
-    subgraph HOST["Local host — single-node MVP"]
-        AGENT["Taskwire agent<br/>queue · leases · result relay"]
-        STORAGE["Storage interfaces<br/>SQLite/filesystem by default"]
-        WORKERS["Python worker processes<br/>pull · execute · heartbeat"]
-    end
-
-    subgraph OPTIONAL["Optional post-MVP capabilities"]
-        PEERS["Peer agents<br/>routing · work stealing"]
-        KAFKA["Kafka<br/>durable result delivery"]
-    end
-
-    DEV -->|"SUBMIT → durable ACK"| AGENT
-    WORKERS -->|"PULL / HEARTBEAT / COMPLETE"| AGENT
-    AGENT -->|"leased TASK"| WORKERS
-    WORKERS -->|"fenced COMPLETE + result ref"| AGENT
-    AGENT -->|"RESULT / reconnect replay"| DEV
-    DEV -->|"result ACK"| AGENT
-    AGENT <--> STORAGE
-
-    AGENT <-.->|"authenticated cluster traffic"| PEERS
-    WORKERS -.->|"queue-mode result"| KAFKA
-    KAFKA -.->|"consume / reattach"| DEV
-
-    classDef core fill:#e8f1ff,stroke:#2563eb,color:#172554,stroke-width:2px;
-    classDef optional fill:#f5f3ff,stroke:#7c3aed,color:#2e1065,stroke-dasharray:5 4;
-    class DEV,AGENT,WORKERS core;
-    class PEERS,KAFKA optional;
+with Client() as tw:
+    futures = tw.map(render, doc_ids)        # thousands of tasks, one batched write
+    results = tw.gather(futures, timeout=600)
 ```
 
 ```text
-┌──────────────────────────────┐
-│ Python application           │
-│ @task · Runtime · Future     │
-└──────────────┬───────────────┘
-               │ SUBMIT
-               │ ◄── durable ACK
-               ▼
-┌──────────────────────────────┐       authenticated       ┌─────────────────────┐
-│ Taskwire agent               │◄────── cluster traffic ──►│ Peer agents         │
-│ queue · leases · result relay│                            │ route · steal work  │
-└──────────────┬───────────────┘                            └─────────────────────┘
-               │ leased TASK
-               │ ◄── PULL / HEARTBEAT / COMPLETE
-               ▼
-┌──────────────────────────────┐
-│ Python worker processes      │
-│ deserialize · execute        │
-└───────────┬──────────────┬───┘
-            │              │
-            │ result reference
-            ▼
-┌───────────────────────────────────────────────┐
-│ Agent storage                                │
-│ state: memory / SQLite / PostgreSQL          │
-│ objects: memory / filesystem / S3            │
-└──────────────────────┬────────────────────────┘
-                       │ RESULT / reconnect replay
-                       └──────────────────► Application
-
-Solid path: single-node MVP    Side paths: optional post-MVP capabilities
+  application pods ──┐
+  (Client SDK)       │
+                     │   SQL
+  worker pools ──────┼──────────►  PostgreSQL        S3-compatible store
+  (Deployments,      │             task state        large values only
+   scaled by KEDA)   │
+                     │
+  controller ────────┘
+  (lease recovery, retention, Prometheus metrics)
 ```
 
-The agent replaces an external broker for the core workflow. Applications submit task references and small values—or object references for larger values—over a protected local socket. The control plane is gRPC, defined by [`proto/taskwire/v1/control.proto`](proto/taskwire/v1/control.proto), so a client in any gRPC-capable language is generated rather than hand-written. Workers pull tasks and return fenced result references to the agent; they never connect back to applications. Task state and immutable objects use separate storage interfaces, with SQLite and the filesystem as zero-infrastructure defaults. See the [storage architecture](docs/storage.md).
+- **Durable.** A submitted task is a committed row. Pod evictions, spot-node loss, and rolling deploys cost at most a retry.
+- **Kubernetes-native.** Workers are ordinary pods in ordinary Deployments. They drain on `SIGTERM`, scale on queue depth (including to zero), and are installed with one Helm chart.
+- **Observable.** Prometheus metrics, health probes, default alerts, and a dashboard are part of the first working version.
+- **Stated guarantees.** Durable submit, exclusive claims, fenced outcomes, and bounded retries are defined once, tested against every backend, and checked by each process before it does any work.
+- **At least once.** Each task's outcome is recorded once; side effects need application-level idempotency.
+
+## Documentation
+
+- [Vision](docs/vision.md) — why Taskwire exists, and what it is not for
+- [Architecture](docs/architecture.md) — how it fits together
+- [Decisions](docs/decisions.md) — the design reset and what was removed
+- [Phases](docs/phases/README.md) — the authoritative implementation plan
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/) and Go (version pinned in `go.mod`).
+Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
-make sync          # uv sync: creates .venv from uv.lock (Python 3.12 via .python-version)
-make lint unit     # go vet + ruff, go test + pytest
-make integration   # builds and drives the agent end to end
-make smoke-wheel   # builds the wheel (uv build) and tests it in a clean venv
+make sync            # create .venv from uv.lock (Python 3.12 via .python-version)
+make lint unit       # ruff + pytest, no database required
+make packaging       # build the wheel and test it in a clean venv
 ```
 
-Add Python dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`) so `uv.lock` stays in sync.
-
-## Contributing
-
-Contributions should follow the phase acceptance gates and preserve the protocol/config parity requirements in the plan review.
+Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`) so `uv.lock` stays in sync.
 
 ## License
 

@@ -1,5 +1,4 @@
-"""Worker-side execution primitives.
+"""Worker process: claim, execute, heartbeat, complete.
 
-Empty in Phase 0 — this package exists so the repository contract's source
-roots are real from the start. Phase 3 fills it in.
+Empty until Phase 2 (docs/phases/phase-2-worker.md).
 """
