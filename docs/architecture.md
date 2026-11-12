@@ -122,7 +122,7 @@ Workers poll for work by default. An event-driven wake-up is an optional backend
 
 This is a design constraint, not an optimization. Any feature that would put task output in the backend is out of scope.
 
-Task state is kept for a retention period, set separately for succeeded and failed tasks, and then purged by the controller, which also deletes the purged tasks' results from channels that support deletion.
+Task state is kept for one retention period and then removed by the controller, a day's partition at a time, which also deletes the purged tasks' results from channels that support deletion.
 
 ## Kubernetes integration
 

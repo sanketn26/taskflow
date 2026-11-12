@@ -72,6 +72,7 @@ Each pool Deployment sets:
 | Queue is not draining | Oldest queued age above threshold while depth is non-zero |
 | No workers for a pool with queued work | Depth above zero and workers at zero beyond the scale-up window |
 | Queued work that no worker can run | `taskwire_queue_unserved` above zero beyond a rollout window: a deploy removed the last worker for a task version, or a client is ahead of the workers |
+| Partition maintenance failing | `taskwire_default_partition_rows` above zero |
 | Workers being lost | Rate of reaped tasks above threshold |
 | Startup assertion failing | A worker or controller pod not ready with a failed check |
 | Stuck task | Longest-running attempt above threshold |

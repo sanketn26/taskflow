@@ -19,7 +19,8 @@ The controller runs the full startup assertion (Phase 1), then three loops over 
 | Statistics | `stats()` cached for `/metrics` | 5 s | `TASKWIRE_STATS_SECONDS` |
 | Result sweep | On channels with `list` and `delete`: remove published results older than a safety margin that no task record references (left by a crash between publish and `complete`, or by a stale attempt) | 10 min | `TASKWIRE_RESULT_SWEEP_SECONDS` |
 
-- Retention is set per outcome: `TASKWIRE_RETAIN_SUCCEEDED_SECONDS` (default 86,400) and `TASKWIRE_RETAIN_FAILED_SECONDS` (default 604,800), so failed tasks stay available for diagnosis longer.
+- Retention is one period for all outcomes: `TASKWIRE_RETAIN_SECONDS` (default 604,800, seven days). Task data is stored in daily partitions and removed by dropping a partition once everything in it is terminal and past retention, so retention is accurate to a day. How long a *result* stays readable is the result channel's retention.
+- The same loop creates partitions three days ahead. If it cannot, new tasks land in a default partition and `taskwire_default_partition_rows` rises above zero.
 - The reaper requeues the tasks of workers whose liveness has lapsed and tasks past their timeout, and removes the dead workers' registrations.
 - Any number of replicas may run. The backend operations are safe to run concurrently, so replicas do not conflict and no leader election is needed. Two replicas is the recommended deployment.
 - The controller is off the task path. While it is down, tasks continue to run; expired leases are not recovered and queue metrics go stale.
@@ -44,6 +45,8 @@ Prometheus text format. The `taskwire[metrics]` extra installs the client librar
 | `taskwire_tasks_reaped_total` | counter | `pool`, `reason` |
 | `taskwire_backend_info` | gauge | `backend`, `durability` |
 | `taskwire_tasks_purged_total` | counter | — |
+| `taskwire_partitions` | gauge | — |
+| `taskwire_default_partition_rows` | gauge | — |
 | `taskwire_results_tracked` | gauge | `channel`, `state` (`available`, `expired`) |
 | `taskwire_results_tracked_bytes` | gauge | `channel` |
 | `taskwire_results_deleted_total` | counter | `channel`, `reason` (`purged`, `orphan`) |
@@ -101,7 +104,7 @@ Out of scope. The `trace_context` column exists; this phase only ensures the cli
 
 - Reaper recovers a task from a killed worker within one interval plus the lease length.
 - Two controller replicas under load: no task is reaped twice and no errors are raised.
-- Retention removes only finished tasks older than the cutoff and keeps up with a sustained backlog.
+- Retention drops a partition only when all its tasks are terminal and past the cutoff, keeps up with a sustained backlog, and leaves a long-scheduled task and its input intact. Partitions exist three days ahead; with partition creation blocked, submits still succeed through the default partition and the metric reports it.
 - Unserved work: tasks queued for a version no live worker registers are counted in `taskwire_queue_unserved`; the count drops to zero when such a worker starts, and tasks merely waiting for a busy worker are not counted.
 - Result tracking: tracked counts and bytes match what was published; purge deletes the results of purged tasks; the sweep removes an orphan left by a crash between publish and `complete` and never removes a referenced result.
 - With the controller stopped, submitted tasks still run to completion.
