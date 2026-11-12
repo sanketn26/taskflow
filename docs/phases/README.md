@@ -23,8 +23,9 @@ After pre-alpha
 
 | Phase | Status | Notes |
 |------:|--------|-------|
-| 0 | **In progress** | Packaging, lint, unit, and clean-wheel tests exist. The PostgreSQL test fixture and CLI entry point do not |
-| 1–8 | **Not started** | Specification only |
+| 0 | **Done locally; CI pending** | Packaging, `taskwire` command, environment configuration, PostgreSQL test fixture, CI on PostgreSQL 14 and 18 |
+| 1 | **Next** | Backend interface, conformance suite, in-memory and PostgreSQL backends, startup assertion |
+| 2–8 | **Not started** | Specification only |
 
 The repository was reset in November 2026; see [../decisions.md](../decisions.md). Nothing that executes a task exists yet.
 
@@ -53,6 +54,7 @@ The repository was reset in November 2026; see [../decisions.md](../decisions.md
 ```bash
 make sync                      # create .venv from uv.lock
 make format lint unit          # fast loop, no database
-make integration               # needs TASKWIRE_TEST_DATABASE_URL
+make db-up                      # local PostgreSQL in Docker (make db-down to stop)
+make integration               # uses $TASKWIRE_TEST_DATABASE_URL, or the db-up server
 make packaging                 # wheel in a clean venv
 ```

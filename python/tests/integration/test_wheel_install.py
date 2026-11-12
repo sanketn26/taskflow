@@ -8,7 +8,6 @@ plain pytest collection would give us for free and therefore prove nothing.
 import shutil
 import subprocess
 import tomllib
-import venv
 from pathlib import Path
 
 import pytest
@@ -42,10 +41,16 @@ def test_wheel_install_works_without_source_checkout(tmp_path):
     assert len(wheels) == 1, wheels
 
     venv_dir = tmp_path / "venv"
-    venv.create(venv_dir, with_pip=True)
     venv_python = venv_dir / "bin" / "python"
+    uv = _uv()
     subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "--quiet", str(wheels[0])],
+        [uv, "venv", "--quiet", str(venv_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [uv, "pip", "install", "--quiet", "--python", str(venv_python), str(wheels[0])],
         check=True,
         capture_output=True,
         text=True,
@@ -53,12 +58,18 @@ def test_wheel_install_works_without_source_checkout(tmp_path):
 
     isolated_cwd = tmp_path / "outside-repo"
     isolated_cwd.mkdir()
-    result = subprocess.run(
+    # Deliberately no PYTHONPATH and a cwd outside the repo.
+    env = {"PATH": "/usr/bin:/bin"}
+
+    for command in (
         [str(venv_python), "-c", "import taskwire; print(taskwire.__version__)"],
-        cwd=isolated_cwd,
-        env={"PATH": "/usr/bin:/bin"},  # deliberately no PYTHONPATH, no repo cwd
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert result.stdout.strip() == _pyproject_version()
+        [str(venv_dir / "bin" / "taskwire"), "version"],
+        [str(venv_python), "-m", "taskwire", "version"],
+    ):
+        result = subprocess.run(
+            command, cwd=isolated_cwd, env=env, capture_output=True, text=True
+        )
+        assert result.returncode == 0, (
+            f"{command}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+        assert result.stdout.strip() == _pyproject_version(), command

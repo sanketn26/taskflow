@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "taskwire"
-version = "0.1.0"
+version = "0.1.0.dev0"
 description = "Kubernetes-native distributed task execution for Python, backed by PostgreSQL"
 authors = [{ name = "Sanket Naik", email = "sanketn@gmail.com" }]
 license = "MIT"
@@ -19,9 +19,16 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
-# Runtime dependencies are added by the phase that first uses them
-# (docs/phases/). Nothing is implemented yet, so nothing is required.
-dependencies = []
+dependencies = [
+  "psycopg[pool]>=3.2",
+]
+
+[project.optional-dependencies]
+# Plain psycopg needs libpq installed on the system; this bundles it instead.
+binary = ["psycopg[binary]>=3.2"]
+
+[project.scripts]
+taskwire = "taskwire.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/sanketn26/taskwire"
@@ -32,6 +39,7 @@ Changelog = "https://github.com/sanketn26/taskwire/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
+  "psycopg[binary]>=3.2",
   "pytest>=9.2",
   "pytest-cov>=7.1",
   "ruff>=0.17",

@@ -48,5 +48,35 @@ jobs:
       - run: uv sync --all-extras --locked
       - run: make packaging
 
-  # The PostgreSQL-backed integration job is added in Phase 0
-  # (docs/phases/phase-0-repository.md) together with the first database test.
+  # Oldest and newest supported PostgreSQL major versions.
+  integration:
+    needs: [lint, unit]
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["14", "18"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: taskwire
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TASKWIRE_TEST_DATABASE_URL: postgresql://postgres:taskwire@localhost:5432/postgres
+      # Fail, rather than skip, if the database variable is ever lost.
+      TASKWIRE_REQUIRE_INTEGRATION: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras --locked
+      - run: make integration

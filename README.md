@@ -48,11 +48,13 @@ with Client() as tw:
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/).
+Requires [uv](https://docs.astral.sh/uv/). Integration tests also need Docker, or any PostgreSQL 14+ server you point `TASKWIRE_TEST_DATABASE_URL` at.
 
 ```bash
 make sync            # create .venv from uv.lock (Python 3.12 via .python-version)
 make lint unit       # ruff + pytest, no database required
+make db-up           # PostgreSQL in Docker for integration tests (make db-down to stop)
+make integration     # tests that need a real PostgreSQL
 make packaging       # build the wheel and test it in a clean venv
 ```
 

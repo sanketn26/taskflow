@@ -19,7 +19,8 @@ A Python-only repository in which later phases can add code and have it linted, 
 - `TASKWIRE_TEST_DATABASE_URL` points at a PostgreSQL server the tests may create databases on.
 - A session-scoped pytest fixture creates a uniquely named database per test session and drops it afterwards. A function-scoped fixture gives each test a clean schema.
 - If the variable is unset, tests marked `integration` are skipped with a message that says how to start a database. They are never silently passed.
-- `make db-up` and `make db-down` start and stop a local PostgreSQL container for development.
+- `make db-up` and `make db-down` start and stop a local PostgreSQL container for development (`PG_VERSION` selects the major version). `make integration` uses `TASKWIRE_TEST_DATABASE_URL` if set, otherwise the `db-up` container.
+- `TASKWIRE_REQUIRE_INTEGRATION=1` turns a missing database variable into a failure instead of a skip. CI sets it so a lost variable cannot make the job pass by skipping.
 - CI gains an `integration` job using a PostgreSQL service container, run against the oldest and newest supported PostgreSQL major versions.
 
 Supported PostgreSQL versions: 14 and later.
@@ -46,6 +47,12 @@ Supported PostgreSQL versions: 14 and later.
 - With the variable unset, integration tests report as skipped.
 - `taskwire version` prints the package version from an installed wheel.
 - Configuration: missing required variable, malformed value, and defaults.
+
+## Status
+
+**Implemented; exit gate met locally, pending its first CI run.** Implemented in `python/taskwire/{config,cli}.py`, `harness/postgres.py`, and `python/tests/integration/`.
+
+Two small additions beyond the list above: `TASKWIRE_STARTUP_CHECK` and `TASKWIRE_ALLOW_EPHEMERAL` are parsed now, because Phase 1 defines them and they exercise defaults and validation; and `python -m taskwire` works alongside the `taskwire` script.
 
 ## Exit gate
 
