@@ -14,7 +14,7 @@ Kubernetes pre-alpha (do in order)
   Phase 5  Kubernetes packaging            ← pre-alpha gate
 
 After pre-alpha
-  Phase 6  Object storage for large values
+  Phase 6  Redis and Kafka result channels
   Phase 7  Hardening and release
   Phase 8  Examples and adoption docs
 ```
@@ -31,6 +31,7 @@ The repository was reset in November 2026; see [../decisions.md](../decisions.md
 
 ## Rules that apply to every phase
 
+- No task output is ever written to the backend. Results go to the result channel (Phase 2); the backend records state and a reference.
 - All storage access goes through the Phase 1 `Backend` interface. No module outside a backend package imports a database driver.
 - A backend is supported only if it passes the conformance suite. Every process runs the startup assertion before doing any work.
 - Execution is at least once. Never claim exactly-once.

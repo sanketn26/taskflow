@@ -20,11 +20,11 @@ The alternatives each miss in a different way:
 
 ## The thesis
 
-> Taskwire is a Kubernetes-native library for durable, distributed parallel processing in Python, with PostgreSQL as the only stateful dependency.
+> Taskwire is a Kubernetes-native library for durable, distributed parallel processing in Python, with PostgreSQL as the only dependency for task state.
 
 Three bets define it:
 
-1. **Guaranteed semantics over a plain database.** Taskwire defines what it guarantees (durable submit, exclusive claims, fenced outcomes, bounded retries) as a backend interface, tests every backend against it, and asserts it at start-up. PostgreSQL is the production backend. There is no broker, no result backend, and no Taskwire server on the task path.
+1. **Guaranteed semantics over a plain database.** Taskwire defines what it guarantees (durable submit, exclusive claims, fenced outcomes, bounded retries) as a backend interface, tests every backend against it, and asserts it at start-up. PostgreSQL is the production backend. There is no broker, no result backend, and no Taskwire server on the task path. The backend is a control plane: no task output passes through it. Workers publish results asynchronously to a result channel the deployment chooses (S3, Redis, Kafka, or memory).
 2. **Kubernetes does what Kubernetes is good at.** Workers are ordinary pods in ordinary Deployments. Kubernetes restarts them, KEDA or the HPA scales them, and Taskwire cooperates with drains and evictions instead of supervising processes itself.
 3. **Observability is built in, not added later.** Prometheus metrics, health probes, and the autoscaling signal ship with the first working version, because operating the system depends on them.
 
@@ -83,7 +83,7 @@ Taskwire's edge over the PostgreSQL queues is narrower than its edge over Celery
 ## Delivery posture
 
 - **Kubernetes pre-alpha (Phases 0–5):** backend contract, worker, client SDK, controller with metrics, and a Helm chart, proven end to end on a local cluster.
-- **After that:** object storage for large values, then hardening and release, then examples.
+- **After that:** Redis and Kafka result channels, then hardening and release, then examples.
 - **Unscheduled:** cron-style schedules, OpenTelemetry tracing, a web console, other-language SDKs, and an operator with a `WorkerPool` resource.
 
 ## Related documents

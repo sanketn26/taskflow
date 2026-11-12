@@ -19,7 +19,7 @@ From nothing to a completed `map` in under ten minutes on a local `kind` cluster
 | CPU and GPU pools | Two pools with different images, node selectors, and scaling rules |
 | I/O-bound fan-out | An `async` pool making many concurrent API calls |
 | Idempotent side effects | Designing a task that is safe to run more than once |
-| Large inputs and results | Object storage and its limits |
+| Results on S3, Redis, and Kafka | Result channels, their capabilities, and passing large data by reference |
 | Delayed and prioritised work | `_run_after` and `_priority` |
 | Cooperative cancellation | A long task that checks `cancel_requested` |
 

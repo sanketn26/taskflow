@@ -19,16 +19,16 @@ This document is a non-normative orientation guide. Requirements, schemas, failu
                  │                        │ Backend interface                 │
                  └────────────────────────┼───────────────────────────────────┘
                                           ▼
-                                    PostgreSQL            S3-compatible store
-                                    (first backend)       large values only
+                                    PostgreSQL            result channel
+                                    (first backend)       S3 · Redis · Kafka · memory
 ```
 
 There are four moving parts, and all of them are the same Python package:
 
 | Part | Runs as | Responsibility |
 |---|---|---|
-| Client SDK | Inside application pods | Submit tasks, wait for results, cancel |
-| Worker | `taskwire worker` in a Deployment per pool | Claim, execute, heartbeat, complete |
+| Client SDK | Inside application pods | Submit tasks, watch their state, fetch results from the result channel, cancel |
+| Worker | `taskwire worker` in a Deployment per pool | Claim, execute, heartbeat, publish the result, complete |
 | Controller | `taskwire controller` in a small Deployment | Reap lost work, enforce retention, export queue metrics |
 | Migrations | `taskwire migrate` as a Helm hook Job | Install and upgrade the backend schema |
 
@@ -97,13 +97,32 @@ A worker pod runs one supervisor process and one or more executor processes.
 - An executor process that crashes fails only the attempts it was running; the supervisor reports them and starts a replacement.
 - On `SIGTERM` the worker stops claiming, lets running tasks finish within the pod's termination grace period, releases what is left, and exits.
 
+Each task hashes to one of a fixed set of buckets, and a bucket table maps each bucket to a preferred worker by consistent hashing. A worker claims from its own buckets first and from others after a short window, so tasks sharing an affinity key tend to run on the same pod, workers rarely contend for the same rows, and a pod joining or leaving moves work only between ring neighbours. The preference is loose: it never strands a task and no guarantee depends on it.
+
 Workers poll for work by default. An event-driven wake-up is an optional backend capability.
 
-## Results
+## Control plane and data plane
 
-A client reads results by task ID and waits by polling with backoff, in bounded batches. After a client restart, `reattach` needs only the task IDs or the batch ID. Results are kept for a retention period, which is set separately for succeeded and failed tasks, and then purged by the controller.
+**The backend is the control plane only.** It holds task state: what was submitted, who holds it, how it ended. **No task output ever passes through it** — not between tasks, and not back to the submitter.
 
-Values up to the inline limit are stored in the backend. Larger values go to an S3-compatible object store, with a checksummed reference in the backend (Phase 6). Clients and workers talk to the object store directly.
+```text
+  worker ──publish(value)──►  result channel  ──fetch(ref)──►  client / consumer
+     │                        (S3, Redis, Kafka, memory)            ▲
+     └──complete(ref)──►  backend  ──state = succeeded, ref─────────┘
+```
+
+- **Submitting a task is asynchronous, and that is the protocol.** `submit` returns once the task is durable; it is never a remote call that hands a value back. A submitter that wants the output gets it later, from the result channel.
+- **Publishing is asynchronous.** A worker writes the return value to the result channel, then records `succeeded` and a small reference in the backend. The backend never sees the bytes, and nothing blocks on a handshake through it.
+- **Reading is the reader's business.** `future.result()` learns from the backend that the task succeeded, then fetches the value from the channel. On a stream channel such as Kafka there is nothing to fetch by key: consumers read the topic, and `result()` says so.
+- **Cross-task coordination is out of scope.** There is no "wait for the output of task A", no fan-in or barrier over outputs, and no chaining. A task that needs another's output reads the channel; "B after A" means A submits B, or a consumer of the channel does.
+- **Result tracking is a system capability.** The backend does not hold results but always knows about them: which tasks have one, where it is, its size and checksum, and when it expires. Clients query that record, the controller exports it as metrics, deletes results when tasks are purged, and sweeps results that no task references. Applications never keep their own bookkeeping.
+- **Two contracts, kept apart.** The backend guarantees task state and result tracking (S1–S12). The result channel declares its own properties (keyed fetch or stream, durable or not, retention). A task can be durably `succeeded` while its result has expired from a Redis channel; that is the channel's declared behaviour, not a backend failure.
+- **Fencing still holds.** A worker with a stale lease may publish, but its `complete` is rejected, so its reference is never recorded. Result keys include the lease, so a stale publish cannot overwrite the winner's.
+- Backend load depends on the number of tasks and state changes, never on the size or volume of results.
+
+This is a design constraint, not an optimization. Any feature that would put task output in the backend is out of scope.
+
+Task state is kept for a retention period, set separately for succeeded and failed tasks, and then purged by the controller, which also deletes the purged tasks' results from channels that support deletion.
 
 ## Kubernetes integration
 
@@ -146,6 +165,6 @@ Task rows are written at submit, claim, and finish. Heartbeats touch one row per
 3. [Phase 3 — Client SDK](phases/phase-3-client-sdk.md)
 4. [Phase 4 — Controller and Observability](phases/phase-4-controller-observability.md)
 5. [Phase 5 — Kubernetes Packaging](phases/phase-5-kubernetes.md)
-6. [Phase 6 — Object Storage](phases/phase-6-object-storage.md)
+6. [Phase 6 — Redis and Kafka Result Channels](phases/phase-6-result-channels.md)
 7. [Phase 7 — Hardening and Release](phases/phase-7-hardening-release.md)
 8. [Phase 8 — Examples and Adoption](phases/phase-8-examples.md)

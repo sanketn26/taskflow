@@ -23,8 +23,21 @@ These are the contract. Each has an identifier so that conformance tests and sta
 | S9 | **Atomic cancel.** A cancel racing a claim resolves to exactly one of: cancelled before it ran, or cancellation requested of the running attempt |
 | S10 | **Terminal is final.** Once a task is `succeeded`, `failed`, or `cancelled`, its state and outcome never change |
 | S11 | **Conservation.** Every submitted task is in exactly one state until retention removes it |
+| S12 | **Result tracking.** A succeeded task has exactly one result record: either "no result" or the reference published under the lease that completed it. The record is written atomically with the transition to `succeeded`, never changes afterwards, and is removed only with the task. The backend tracks where a result is and until when; it never holds the result |
 
 Execution is at least once. Nothing here promises exactly-once execution.
+
+### Results never enter the backend
+
+Submitting a task is asynchronous, and that is the protocol: `submit` returns when the task is durable and never hands a value back. The backend is the control plane. It stores task state, inputs, and failures. It does not store, carry, or coordinate task outputs — neither between tasks nor back to the submitter.
+
+- A worker publishes a task's return value to the **result channel** (Phase 2: S3, Redis, Kafka, or memory) and then calls `complete` with the reference the channel returned. Publication is asynchronous to the backend: the backend never sees the bytes.
+- A reader learns from the backend only that a task succeeded, and where its result was published. It fetches the value from the channel itself.
+- No method in this interface reads, waits on, joins, or streams an output, and no backend may add one.
+- **Tracking results is a system capability, and it lives here.** The backend does not hold results, but it always knows about them: for every succeeded task it records whether a result exists, which channel holds it, its key, size, checksum, codec, when it was published, and when the channel will let it expire (S12). `get` returns this record with the task snapshot, so any process can answer "is there a result, where, and is it still there?" without touching the channel.
+- Whether the bytes can be read back is still the channel's contract. The record makes the answer predictable: a result past its recorded expiry is reported as expired by the backend clock, not discovered by a failed fetch.
+
+See `docs/architecture.md`, "Control plane and data plane".
 
 ## Interface
 
@@ -43,7 +56,8 @@ class Backend(Protocol):
     def claim(self, worker: WorkerInfo, pools: Sequence[str],
               task_keys: Sequence[str], limit: int) -> list[ClaimedTask]: ...
     def heartbeat(self, worker_id: str, ttl: timedelta) -> Heartbeat: ...
-    def complete(self, task_id: TaskID, lease_id: LeaseID, result: Value) -> bool: ...
+    def complete(self, task_id: TaskID, lease_id: LeaseID,
+                 result: ResultRef | None) -> bool: ...
     def fail(self, task_id: TaskID, lease_id: LeaseID,
              failure: Failure, retryable: bool) -> TaskState | None: ...
     def release(self, task_id: TaskID, lease_id: LeaseID) -> bool: ...
@@ -51,7 +65,7 @@ class Backend(Protocol):
     def wait(self, signal: Signal, timeout: timedelta) -> None: ...
 
     def reap(self, limit: int) -> int: ...
-    def purge(self, policy: RetentionPolicy, limit: int) -> list[ObjectRef]: ...
+    def purge(self, policy: RetentionPolicy, limit: int) -> list[ResultRef]: ...
     def stats(self) -> list[PoolStats]: ...
 
     def close(self) -> None: ...
@@ -60,13 +74,38 @@ class Backend(Protocol):
 Notes on the operations:
 
 - **`submit`** takes a batch and is atomic per call.
-- **`heartbeat`** is per worker, not per task. It extends the worker's liveness and returns whether the worker is still considered alive and which of its tasks have a cancel request. A worker reported as not alive has lost every lease it held.
+- **`claim`** is not a prefetch. A caller passes as `limit` the number of execution slots it has free right now, and every task returned starts running at once. The interface has no way to reserve work for later, so a busy worker never holds tasks an idle worker could run, and a dead worker loses only tasks that were executing.
+- **`claim`** prefers the caller's own buckets (see "Buckets and loose affinity"). The preference never crosses a priority level and is never a guarantee.
+- **`heartbeat`** is per worker, not per task. It extends the worker's liveness and returns the buckets the worker currently owns, whether the worker is still considered alive and which of its tasks have a cancel request. A worker reported as not alive has lost every lease it held.
 - **`complete`, `fail`, `release`** return a negative result, not an exception, when the lease is stale.
-- **`wait`** blocks until work or results may be available, or the timeout passes. A backend may implement it as a plain sleep; callers must always re-check after it returns.
+- **`complete`** records that the task succeeded and, at most, a small opaque `ResultRef` (bounded at 1 KiB). It never receives the result value; see "Results never enter the backend" below.
+- **`purge`** returns the result references of the tasks it removed, so the caller can delete them from the result channel.
+- **`wait`** blocks until work or state changes may be available, or the timeout passes. A backend may implement it as a plain sleep; callers must always re-check after it returns.
 - **`reap`** requeues or fails the tasks of workers whose liveness has expired, and tasks past their own `timeout`.
+- **`stats`** reports, per pool and `name@version`, queued tasks that no live worker has registered for, so stranded work is visible rather than silently waiting.
 - **`purge`** applies separate retention periods to succeeded, failed, and cancelled tasks.
 
-Errors raised by a backend are limited to `TaskConflictError`, `InvalidArgumentError`, `ValueTooLargeError`, `BackendUnavailableError`, and `BackendCheckError`.
+Errors raised by a backend are limited to `TaskConflictError`, `InvalidArgumentError`, `InputTooLargeError`, `BackendUnavailableError`, and `BackendCheckError`.
+
+## Buckets and loose affinity
+
+Every task belongs to a **bucket**, and every bucket has a preferred worker. This gives a task a loose affinity to a pod, and keeps workers from competing for the same rows, without ever tying a task to a pod.
+
+**Two levels of indirection, like a virtual-method table.** A task never names a worker. It names a bucket, and a small table says who owns that bucket now:
+
+```text
+  task ──hash──►  bucket (fixed for the task's life)  ──bucket table──►  owner (changes with the pods)
+```
+
+Reassigning work when pods come and go rewrites entries in the bucket table. It never touches a task.
+
+- **Buckets.** Each pool has 1024 buckets. A task's bucket is a stable hash of its affinity key if it was submitted with one (`NewTask.affinity`), otherwise of its task ID, which spreads tasks evenly. The hash is fixed by this contract (the first 8 bytes of SHA-256), so every SDK version and every backend agrees.
+- **Ownership by consistent hashing.** Live workers of a pool sit at points on a hash ring (`TASKWIRE_RING_POINTS` per worker, default 8); a bucket belongs to the first worker point at or after its own position. When a worker joins, it takes buckets only from the workers that follow its points on the ring. When it leaves or is reaped, its buckets pass only to those successors. No other worker's buckets move.
+- **The bucket table** is maintained by the backend, in the same transaction that registers a worker, removes one on clean shutdown, or reaps one whose liveness expired. Only entries whose owner changes are written. All workers read the same table, so they agree on ownership; nothing is computed independently in each pod.
+- **Loose, not strict.** A worker claims from its own buckets first. If it still has free slots, it claims any eligible task that has been claimable for longer than `TASKWIRE_AFFINITY_WAIT_SECONDS` (default 5), whatever its bucket. A busy, slow, or dead owner therefore delays a task by at most that window; it never strands it.
+- **What affinity is not.** It is not ordering: tasks with the same key can run concurrently and out of order. It is not exclusivity: after the window any worker may run the task. It is not a guarantee: S1–S12 hold with the bucket table empty, stale, or wrong, and no caller may depend on affinity for correctness.
+
+A larger `TASKWIRE_RING_POINTS` evens out how many buckets each worker owns but means a membership change touches more neighbours; a smaller one does the opposite.
 
 ## Capabilities
 
@@ -107,6 +146,7 @@ The probe runs the real operations against the real backend, using tasks in a re
 | S6 | Compare the backend clock with the local clock; warn above a small skew, since correctness does not depend on it but log timestamps do |
 | S9 | Cancel a queued probe task; expect `cancelled` and that a following claim does not return it |
 | S10 | Complete a probe task, then fail it with the same lease; expect no change |
+| S12 | Complete a probe task with a reference; read it back unchanged. Complete with a stale lease and a different reference; expect the recorded reference unchanged |
 
 Probe tasks are deleted at the end. Any left behind by a crashed probe are removed by retention.
 
@@ -124,6 +164,7 @@ One parameterised suite, run against every backend. A backend is supported only 
 - S2: idempotent retry, conflict on changed content, batch atomicity.
 - S3: many concurrent claimers; each task is claimed exactly once.
 - S4: filtering by pool, `name@version`, and `run_after`; priority preference. With many queued tasks that no claimer can run, claim cost stays bounded.
+- Buckets: a task's bucket is identical on both backends and stable across retries and releases. An owner with free slots claims its own buckets' tasks first. With the owner busy, stopped, or absent, another worker claims the task once the affinity window has passed. A worker joining or leaving changes ownership only of buckets adjacent to its ring points; every other entry in the bucket table is untouched. With the bucket table deliberately corrupted, every guarantee still passes.
 - S5: after liveness expiry and re-claim, the first worker's `complete`, `fail`, and `release` have no effect.
 - S6: with the caller's clock skewed far forwards and backwards, expiry behaviour is unchanged.
 - S7: backoff schedule, attempt counting, exhaustion.
@@ -131,6 +172,7 @@ One parameterised suite, run against every backend. A backend is supported only 
 - S9: cancel in each state; cancel racing claim under load.
 - S10: every operation against a terminal task leaves it unchanged.
 - S11: randomized concurrent load with a seeded schedule; submitted equals queued plus running plus terminal at every check.
+- S12: two workers race to complete one task with different references; exactly one is recorded and it belongs to the lease that won. A reference over the size bound is rejected.
 - Reap: bounded batches; concurrent reapers do not double-process; task timeout is enforced.
 - Purge: per-outcome retention; only terminal tasks are removed.
 - The startup check itself: it passes on a correct backend and fails, naming the right guarantee, on deliberately broken ones (a backend with a non-exclusive claim, one that ignores fencing, a PostgreSQL read replica, a PostgreSQL with `synchronous_commit = off`).
@@ -157,6 +199,7 @@ CREATE TABLE taskwire.tasks (
   pool             text NOT NULL,
   task_key         text NOT NULL,          -- 'name@version'
   priority         smallint NOT NULL DEFAULT 0,
+  bucket           smallint NOT NULL,      -- hash of the affinity key, else of the id
   state            text NOT NULL DEFAULT 'queued',
   run_after        timestamptz NOT NULL DEFAULT now(),
   attempt          integer NOT NULL DEFAULT 0,
@@ -169,19 +212,45 @@ CREATE TABLE taskwire.tasks (
   lease_id         uuid,
   cancel_requested boolean NOT NULL DEFAULT false,
   failure          jsonb,
+  result_ref       jsonb,                  -- tracking record: channel, key, size, sha256, codec; never the result
+  result_published_at timestamptz,
+  result_expires_at   timestamptz,         -- null: kept until the task is purged
   trace_context    text,
   created_at       timestamptz NOT NULL DEFAULT now(),
   started_at       timestamptz,
   finished_at      timestamptz
 );
 
-CREATE TABLE taskwire.task_values (       -- inputs and results, kept off the hot table
-  task_id  uuid NOT NULL,
-  kind     text NOT NULL,                 -- 'input' | 'result'
+CREATE TABLE taskwire.task_inputs (       -- kept off the hot table; there is no results table
+  task_id  uuid PRIMARY KEY,
   codec    text NOT NULL,
-  inline   bytea,
-  ref      jsonb,                         -- object reference (Phase 6)
-  PRIMARY KEY (task_id, kind)
+  payload  bytea NOT NULL
+);
+
+-- Work indexes. Internal to the backend: no read by a client ever touches them.
+CREATE TABLE taskwire.ready (             -- one narrow row per claimable task
+  pool       text NOT NULL,
+  bucket     smallint NOT NULL,
+  task_key   text NOT NULL,
+  priority   smallint NOT NULL,
+  run_after  timestamptz NOT NULL,
+  task_id    uuid PRIMARY KEY
+);
+CREATE INDEX ON taskwire.ready (pool, bucket, task_key, priority DESC, run_after);
+
+CREATE TABLE taskwire.running (           -- one narrow row per in-flight task
+  task_id    uuid PRIMARY KEY,
+  worker_id  text NOT NULL,
+  lease_id   uuid NOT NULL,
+  deadline   timestamptz                  -- the task's own timeout, if any
+);
+CREATE INDEX ON taskwire.running (worker_id);
+
+CREATE TABLE taskwire.bucket_owners (     -- the bucket table: who is preferred for each bucket
+  pool       text NOT NULL,
+  bucket     smallint NOT NULL,
+  worker_id  text NOT NULL,
+  PRIMARY KEY (pool, bucket)
 );
 
 CREATE TABLE taskwire.workers (
@@ -198,9 +267,13 @@ Design points:
 
 - **Liveness is per worker.** A heartbeat updates one `workers` row, however many tasks the worker holds. Task rows are written at submit, claim, and finish only. A lease is lost when its worker's `alive_until` passes and the reaper acts, or when the task's own timeout passes.
 - **Fencing is per task.** Each claim writes a new `lease_id`; outcome writes are conditional on it.
-- **Values live in a separate table**, so the frequently updated task rows stay narrow.
-- **Claiming** uses `FOR UPDATE SKIP LOCKED` over a partial index on queued rows keyed by pool and `task_key`, so tasks that no worker can run are not scanned.
-- **Inline values** are limited by `TASKWIRE_INLINE_LIMIT_BYTES` (default 256 KiB). Until Phase 6, larger values are rejected.
+- **Inputs live in a separate table**, so the frequently updated task rows stay narrow. **Results are not stored at all**; a succeeded task row holds only its `result_ref`.
+- **One table to read, two to work from.** `tasks` holds everything about a task in one row, and every read (`get`, waiting, batch lookups, result tracking) touches only it. `ready` and `running` are narrow work indexes that exist so claiming and reaping never scan `tasks`. A state change updates the `tasks` row and inserts or deletes the index row in one transaction.
+- **No operation joins two task tables.** A query that seems to need a join means a column is missing from one of them. A test inspects the query plans of every backend operation.
+- **`tasks` has no index on a column that changes** (state, worker, lease). Its updates can then stay within the page and leave its indexes alone; the insert-and-delete churn is confined to the two narrow tables. The Phase 1 benchmark must confirm this under sustained load.
+- **Claiming** deletes from `ready` with `FOR UPDATE SKIP LOCKED`, first within the caller's own buckets and then among tasks past the affinity window, so in steady state each worker scans its own slice and workers rarely contend for the same rows.
+- **Agreement between the row and the indexes** is part of S11: a queued task has exactly one `ready` row, a running task exactly one `running` row, and a terminal task neither.
+- **Inputs** are limited by `TASKWIRE_MAX_INPUT_BYTES` (default 64 KiB); a larger input is rejected with `InputTooLargeError`. An input is the task's instructions, not its data: large data is passed as a reference to wherever the application keeps it.
 
 ### Connections
 

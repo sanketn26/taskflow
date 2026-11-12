@@ -20,6 +20,7 @@ Install Taskwire on a Kubernetes cluster with one Helm release, run worker pools
 |---|---|
 | Migration `Job` (pre-install and pre-upgrade hook) | Runs `taskwire migrate`, then `taskwire check`; the release fails if the backend does not meet the contract |
 | Controller `Deployment` (2 replicas) with `PodDisruptionBudget` | Reaper, retention, queue metrics |
+| Result channel settings (`TASKWIRE_RESULT_URL`) on workers, controller, and the example client | The chart does not install S3; the end-to-end test brings an S3-compatible test server |
 | Controller `Service` | Metrics scrape target |
 | `ServiceMonitor` (controller) and `PodMonitor` (workers) | Prometheus Operator discovery; optional |
 | `PrometheusRule` | Default alerts; optional |
@@ -70,6 +71,7 @@ Each pool Deployment sets:
 |---|---|
 | Queue is not draining | Oldest queued age above threshold while depth is non-zero |
 | No workers for a pool with queued work | Depth above zero and workers at zero beyond the scale-up window |
+| Queued work that no worker can run | `taskwire_queue_unserved` above zero beyond a rollout window: a deploy removed the last worker for a task version, or a client is ahead of the workers |
 | Workers being lost | Rate of reaped tasks above threshold |
 | Startup assertion failing | A worker or controller pod not ready with a failed check |
 | Stuck task | Longest-running attempt above threshold |

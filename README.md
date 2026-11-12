@@ -1,6 +1,6 @@
 # Taskwire
 
-Taskwire is a Kubernetes-native library for durable, distributed parallel processing in Python. It guarantees a fixed set of task semantics through a backend interface and asserts them at start-up. PostgreSQL is the production backend and the only stateful dependency: there is no broker, no result backend, and no server between your pods and the database.
+Taskwire is a Kubernetes-native library for durable, distributed parallel processing in Python. It guarantees a fixed set of task semantics through a backend interface and asserts them at start-up. PostgreSQL is the production backend and holds all task state: there is no broker and no server between your pods and the database. Task results never pass through it; workers publish them to a result channel you choose (S3, Redis, Kafka, or memory).
 
 ## Project status
 
@@ -25,8 +25,8 @@ with Client() as tw:
   application pods ──┐
   (Client SDK)       │
                      │   SQL
-  worker pools ──────┼──────────►  PostgreSQL        S3-compatible store
-  (Deployments,      │             task state        large values only
+  worker pools ──────┼──────────►  PostgreSQL        result channel
+  (Deployments,      │             task state        S3 · Redis · Kafka
    scaled by KEDA)   │
                      │
   controller ────────┘

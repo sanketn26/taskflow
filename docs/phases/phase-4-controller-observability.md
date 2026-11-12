@@ -15,8 +15,9 @@ The controller runs the full startup assertion (Phase 1), then three loops over 
 | Loop | Operation | Interval | Environment variable |
 |---|---|---|---|
 | Reaper | `reap(limit)` until it returns zero | 5 s | `TASKWIRE_REAP_SECONDS` |
-| Retention | `purge(policy, limit)` in bounded batches | 60 s | `TASKWIRE_PURGE_SECONDS` |
+| Retention | `purge(policy, limit)` in bounded batches, then delete the returned result references from the result channel if it supports deletion | 60 s | `TASKWIRE_PURGE_SECONDS` |
 | Statistics | `stats()` cached for `/metrics` | 5 s | `TASKWIRE_STATS_SECONDS` |
+| Result sweep | On channels with `list` and `delete`: remove published results older than a safety margin that no task record references (left by a crash between publish and `complete`, or by a stale attempt) | 10 min | `TASKWIRE_RESULT_SWEEP_SECONDS` |
 
 - Retention is set per outcome: `TASKWIRE_RETAIN_SUCCEEDED_SECONDS` (default 86,400) and `TASKWIRE_RETAIN_FAILED_SECONDS` (default 604,800), so failed tasks stay available for diagnosis longer.
 - The reaper requeues the tasks of workers whose liveness has lapsed and tasks past their timeout, and removes the dead workers' registrations.
@@ -35,17 +36,25 @@ Prometheus text format. The `taskwire[metrics]` extra installs the client librar
 | `taskwire_queue_depth` | gauge | `pool` |
 | `taskwire_queue_scheduled` | gauge | `pool` |
 | `taskwire_queue_oldest_age_seconds` | gauge | `pool` |
+| `taskwire_queue_unserved` | gauge | `pool`, `task` — queued tasks whose `name@version` no live worker has registered. The version is deliberately not a label |
+| `taskwire_queue_unserved_oldest_age_seconds` | gauge | `pool` |
+| `taskwire_bucket_moves_total` | counter | `pool` — bucket-table entries reassigned by a worker joining, leaving, or being reaped |
 | `taskwire_tasks_running` | gauge | `pool` |
 | `taskwire_workers` | gauge | `pool` |
 | `taskwire_tasks_reaped_total` | counter | `pool`, `reason` |
 | `taskwire_backend_info` | gauge | `backend`, `durability` |
 | `taskwire_tasks_purged_total` | counter | — |
+| `taskwire_results_tracked` | gauge | `channel`, `state` (`available`, `expired`) |
+| `taskwire_results_tracked_bytes` | gauge | `channel` |
+| `taskwire_results_deleted_total` | counter | `channel`, `reason` (`purged`, `orphan`) |
 | `taskwire_stats_age_seconds` | gauge | — |
 | `taskwire_controller_loop_errors_total` | counter | `loop` |
 
 The gauges are a view of shared database state, so every replica reports the same numbers. Queries and dashboards must aggregate them with `max by (pool)`, never `sum`. `taskwire_stats_age_seconds` lets an alert detect a controller that has stopped refreshing.
 
 ### Worker
+
+In addition to the table below: `taskwire_claims_total` with labels `pool` and `affinity` (`owned`, `spilled`), so the share of tasks that ran on their preferred worker is visible.
 
 Recorded by the supervisor process, so no multi-process metrics mode is involved.
 
@@ -93,6 +102,8 @@ Out of scope. The `trace_context` column exists; this phase only ensures the cli
 - Reaper recovers a task from a killed worker within one interval plus the lease length.
 - Two controller replicas under load: no task is reaped twice and no errors are raised.
 - Retention removes only finished tasks older than the cutoff and keeps up with a sustained backlog.
+- Unserved work: tasks queued for a version no live worker registers are counted in `taskwire_queue_unserved`; the count drops to zero when such a worker starts, and tasks merely waiting for a busy worker are not counted.
+- Result tracking: tracked counts and bytes match what was published; purge deletes the results of purged tasks; the sweep removes an orphan left by a crash between publish and `complete` and never removes a referenced result.
 - With the controller stopped, submitted tasks still run to completion.
 - Every metric in the tables above is present with exactly the documented labels; a test fails if an undeclared label appears.
 - Gauges match a direct `stats()` call; `taskwire_stats_age_seconds` grows when the backend is unreachable.
