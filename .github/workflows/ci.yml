@@ -9,48 +9,30 @@ defaults:
     shell: bash
 
 jobs:
-  lint:
+  go-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-go@v5
         with:
-          enable-cache: true
-      - run: uv sync --all-extras --locked
-      - run: make lint
+          go-version-file: go.mod
+      - run: make go-lint
 
-  unit:
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+  go-unit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-go@v5
         with:
-          enable-cache: true
-          python-version: ${{ matrix.python-version }}
-      - run: uv sync --all-extras --locked
-      - run: make unit
-
-  packaging:
-    needs: [lint, unit]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv sync --all-extras --locked
-      - run: make packaging
+          go-version-file: go.mod
+      - run: make go-unit
+      - run: make build
 
   # Oldest and newest supported PostgreSQL major versions.
-  integration:
-    needs: [lint, unit]
+  go-integration:
+    needs: [go-lint, go-unit]
     strategy:
       fail-fast: false
       matrix:
@@ -75,8 +57,43 @@ jobs:
       TASKWIRE_REQUIRE_INTEGRATION: "1"
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make go-integration
+
+  python-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: uv sync --all-extras --locked
-      - run: make integration
+      - run: make sync py-lint
+
+  python-unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - run: make sync py-unit
+
+  python-packaging:
+    needs: [python-lint, python-unit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: make sync packaging

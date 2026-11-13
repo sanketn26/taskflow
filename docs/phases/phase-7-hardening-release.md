@@ -45,7 +45,8 @@ Every run records its seed, and a failing run can be replayed.
 
 ## Security review
 
-- Any credential can read or cancel any task by ID. Decide whether to add separate database roles for clients, workers, and the controller, and document the result as either a supported hardening option or a stated limitation.
+- Any API token can read or cancel any task and can register to receive any task's input. Deliver scoped tokens (pools a token may submit to and serve), or document an installation as a single trust domain as a stated limitation.
+- Only the controller holds database and S3 credentials; verify no library, chart template, or log exposes either.
 - `cloudpickle` is off by default and its trust requirement is documented prominently.
 - The container image runs non-root with a read-only root filesystem; the chart sets restrictive security contexts and supports network policies.
 - Dependency audit and a software bill of materials for the image.
@@ -55,13 +56,13 @@ Every run records its seed, and a failing run can be replayed.
 Written down and tested:
 
 - Supported PostgreSQL, Kubernetes, and Python versions.
-- Which SDK versions may run against which schema versions.
+- Which library protocol revisions each controller version accepts, and which controller versions may run against which schema versions.
 - Metric names and labels as a stable contract.
 - Upgrade and rollback procedures, each exercised in CI.
 
 ## Release
 
-- Wheel and source distribution to PyPI; container image and Helm chart to registries; all built in CI from a tagged commit.
+- Python wheel and source distribution to PyPI; the Go binary as release archives; container image and Helm chart to registries; all built in CI from a tagged commit.
 - Changelog, upgrade notes, and a statement of known limitations.
 
 ## Exit gate

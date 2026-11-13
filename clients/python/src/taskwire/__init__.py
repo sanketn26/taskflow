@@ -1,4 +1,4 @@
-"""Taskwire Python SDK."""
+"""Taskwire Python library."""
 
 from importlib import metadata as _metadata
 

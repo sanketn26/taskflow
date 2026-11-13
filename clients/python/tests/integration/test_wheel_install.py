@@ -12,13 +12,13 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 pytestmark = pytest.mark.packaging
 
 
 def _pyproject_version() -> str:
-    with (REPO_ROOT / "pyproject.toml").open("rb") as f:
+    with (PROJECT_ROOT / "pyproject.toml").open("rb") as f:
         return tomllib.load(f)["project"]["version"]
 
 
@@ -32,7 +32,7 @@ def _uv() -> str:
 def test_wheel_install_works_without_source_checkout(tmp_path):
     subprocess.run(
         [_uv(), "build", "--wheel", "--out-dir", str(tmp_path)],
-        cwd=REPO_ROOT,
+        cwd=PROJECT_ROOT,
         check=True,
         capture_output=True,
         text=True,
@@ -63,7 +63,6 @@ def test_wheel_install_works_without_source_checkout(tmp_path):
 
     for command in (
         [str(venv_python), "-c", "import taskwire; print(taskwire.__version__)"],
-        [str(venv_dir / "bin" / "taskwire"), "version"],
         [str(venv_python), "-m", "taskwire", "version"],
     ):
         result = subprocess.run(

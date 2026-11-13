@@ -167,3 +167,6 @@ cython_debug/
 # Local tool installs / OS cruft
 .local/
 .DS_Store
+
+# Go build output
+/bin/

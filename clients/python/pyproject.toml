@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "taskwire"
 version = "0.1.0.dev0"
-description = "Kubernetes-native distributed task execution for Python, backed by PostgreSQL"
+description = "Kubernetes-native distributed task execution for Python"
 authors = [{ name = "Sanket Naik", email = "sanketn@gmail.com" }]
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.11"
-keywords = ["tasks", "distributed", "parallel", "worker", "queue", "kubernetes", "postgresql"]
+keywords = ["tasks", "distributed", "parallel", "worker", "queue", "kubernetes"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Programming Language :: Python :: 3",
@@ -19,16 +19,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
-dependencies = [
-  "psycopg[pool]>=3.2",
-]
-
-[project.optional-dependencies]
-# Plain psycopg needs libpq installed on the system; this bundles it instead.
-binary = ["psycopg[binary]>=3.2"]
-
-[project.scripts]
-taskwire = "taskwire.cli:main"
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/sanketn26/taskwire"
@@ -39,25 +30,24 @@ Changelog = "https://github.com/sanketn26/taskwire/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
-  "psycopg[binary]>=3.2",
   "pytest>=9.2",
   "pytest-cov>=7.1",
   "ruff>=0.17",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["python/taskwire"]
+packages = ["src/taskwire"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["/.github", "/.venv"]
+exclude = ["/.venv"]
 
 [tool.pytest.ini_options]
-testpaths = ["python/tests"]
-pythonpath = ["python", "."]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
 markers = [
-  "integration: requires a PostgreSQL instance (TASKWIRE_TEST_DATABASE_URL)",
+  "integration: needs a running controller (built from the Go binary)",
   "packaging: builds the wheel and installs it into a clean environment",
-  "chaos: injects seeded process/database faults",
+  "chaos: injects seeded process/controller faults",
   "kubernetes: requires a kind cluster",
 ]
 
@@ -67,8 +57,8 @@ markers = [
 # (notably tomllib) as third-party imports.
 target-version = "py311"
 
-# `taskwire` and `harness` live under python/ and the repo root rather than
-# beside pyproject.toml, so tell isort they are first-party; otherwise it sorts
+# `taskwire` and `harness` live under src/ and beside pyproject.toml rather than
+# the usual place, so tell isort they are first-party; otherwise it sorts
 # the installed package into the third-party block.
 [tool.ruff.lint.isort]
 known-first-party = ["taskwire", "harness"]

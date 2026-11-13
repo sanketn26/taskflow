@@ -1,28 +1,22 @@
-# Phase 6 — Redis and Kafka Result Channels
+# Phase 6 — Stage-Two Features and the Kafka Result Channel
+
+**This phase first builds every stage-two feature listed under "Pre-alpha scope" in [README.md](README.md)**, each to the specification, required tests, and exit-gate clauses in the phase document that describes it: partitioning, affinity, rate and concurrency limits, pacing and load shedding, scoped tokens, the Redis channel, `thread` and `async` modes, the library conformance tool, and per-worker observability. They are built one at a time, each behind its own merge, in an order chosen from what the pre-alpha showed to matter most. The remainder of this document specifies the one feature that is described nowhere else: Kafka.
 
 ## Goal
 
-Add two result channels to the `memory://` and `s3://` channels that ship with the worker in Phase 2: Redis, for short-lived results read back quickly, and Kafka, for results consumed as a stream.
+Add Kafka as a result channel, for results consumed as a stream. S3, Redis, and memory ship with the controller API and the Python library (Phases 2 and 3).
 
-The rule from Phase 1 is unchanged: no task output enters the backend. This phase adds places for output to go; it adds nothing to the `Backend` interface.
+The rule from Phase 1 is unchanged: no task output enters the backend or passes through the controller. A library publishes to the topic itself, with Kafka credentials supplied to the pods by the deployment; the controller issues the record key and headers through `ResultUpload` and records the reference.
 
 ## Contract
 
-Both channels implement the Phase 2 `ResultChannel` interface, pass the channel conformance suite for the capabilities they declare, and are asserted at start.
+The channel follows the Phase 2 result rules for the capabilities it declares, and the controller checks it at start.
 
-| Capability | `redis://` | `kafka://` |
-|---|---|---|
-| `fetch` (read back by reference; `future.result()` works) | yes | **no** |
-| `delete` (removed when the task is purged) | yes | no; the topic's retention applies |
-| `durable` | as configured on the server; declared `no` unless persistence is confirmed by the startup check | yes |
-| `shared` | yes | yes |
-
-### Redis
-
-- One key per result, written with a TTL (`TASKWIRE_RESULT_TTL_SECONDS`, default 24 h). The key and the checksummed reference follow the Phase 2 rules.
-- A result that has expired raises `ResultUnavailableError` on fetch. The task remains `succeeded`; expiry is the channel's declared behaviour.
-- A maximum result size (`TASKWIRE_RESULT_MAX_BYTES`, default 1 MiB for this channel) is enforced at publish; over it the attempt fails with `result_too_large`, which is not retryable.
-- Installed by the `taskwire[redis]` extra.
+| Capability | `kafka://` |
+|---|---|
+| Read back by reference (`future.result()` works) | **no** |
+| Removed when the task is purged | no; the topic's retention applies |
+| Durable | yes |
 
 ### Kafka
 
@@ -44,15 +38,15 @@ Added to the worker: result bytes published, publish duration and failures by ch
 
 ## Required tests
 
-Run against real Redis and Kafka test servers.
+Run against a real Kafka test server.
 
 - Channel conformance suite for each channel, limited to its declared capabilities.
-- Startup assertion: an unreachable or misconfigured channel stops the worker before it claims; a Redis without persistence is reported as not durable.
-- Redis: an expired result raises `ResultUnavailableError` and leaves the task `succeeded`; purge deletes the keys of purged tasks; an oversized result fails with `result_too_large`.
+- Start-up: the controller refuses to start with an unreachable or misconfigured channel.
+- A library with no Kafka credentials fails its attempts with `result_publish_failed`, not silently.
 - Kafka: a record is acknowledged before `complete`; a broker outage fails the publish and the task is retried; a stale attempt's record carries a lease ID that differs from the recorded one; `result()` raises `ResultNotFetchableError`.
 - Channel outage with the backend healthy: tasks retry with `result_publish_failed`; no task is `succeeded` without a published result.
 - No result byte is written to the backend with either channel (asserted against the PostgreSQL tables).
 
 ## Exit gate
 
-On Kubernetes, the same workload runs with results on S3, on Redis, and on Kafka by changing only `TASKWIRE_RESULT_URL`; each channel passes its conformance suite and startup assertion; and the backend's size is unaffected by result volume.
+On Kubernetes, the same workload runs with results on S3, on Redis, and on Kafka by changing only the controller's `TASKWIRE_RESULT_URL` and the pods' channel credentials; and the backend's size is unaffected by result volume.

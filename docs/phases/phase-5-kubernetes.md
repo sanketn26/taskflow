@@ -8,9 +8,9 @@ Install Taskwire on a Kubernetes cluster with one Helm release, run worker pools
 
 ## Container image
 
-- One published image containing the `taskwire` package, used for the controller and the migration Job.
+- One published image containing the static `taskwire` Go binary and nothing else, used for the controller's API and maintenance Deployments and the migration Job.
 - Runs as a non-root user with a read-only root filesystem and no added capabilities.
-- Worker pods use the **user's application image** with `taskwire` installed. The documentation includes a minimal Dockerfile.
+- Application and worker pods use the **user's own image** with the Taskwire library installed (`pip install taskwire`). They need no Taskwire binary and no database access. The documentation includes a minimal Dockerfile and shows one image deployed both as an application Deployment serving no pools and as a worker Deployment serving some.
 
 ## Helm chart
 
@@ -19,19 +19,24 @@ Install Taskwire on a Kubernetes cluster with one Helm release, run worker pools
 | Resource | Purpose |
 |---|---|
 | Migration `Job` (pre-install and pre-upgrade hook) | Runs `taskwire migrate`, then `taskwire check`; the release fails if the backend does not meet the contract |
-| Controller `Deployment` (2 replicas) with `PodDisruptionBudget` | Reaper, retention, queue metrics |
-| Result channel settings (`TASKWIRE_RESULT_URL`) on workers, controller, and the example client | The chart does not install S3; the end-to-end test brings an S3-compatible test server |
+| Controller API `Deployment` (3 replicas) with `PodDisruptionBudget` and optional `HorizontalPodAutoscaler` | The Taskwire API; on the task path |
+| Controller API headless `Service` | Client-side load balancing for long-lived connections |
+| `NetworkPolicy` | Restricts the API to labelled namespaces; restricts PostgreSQL access to the controller |
+| API token and session key `Secret` | The shared credential for libraries, and the key API replicas sign sessions with; may reference existing Secrets |
+| Limits `ConfigMap` | `TASKWIRE_LIMITS` from chart values (`limits.default`, `limits.pools`, `limits.work`); changing it rolls the API Deployment |
+| Controller maintenance `Deployment` (2 replicas) with `PodDisruptionBudget` | Reaper, retention, partitions, queue metrics |
+| Result channel settings (`TASKWIRE_RESULT_URL`) and storage credentials on the controller only | The chart does not install S3; the end-to-end test brings an S3-compatible test server. With S3, application pods receive no storage credential |
 | Controller `Service` | Metrics scrape target |
 | `ServiceMonitor` (controller) and `PodMonitor` (workers) | Prometheus Operator discovery; optional |
 | `PrometheusRule` | Default alerts; optional |
-| Grafana dashboard `ConfigMap` | One overview dashboard; optional |
+| Grafana dashboard `ConfigMap` | Three dashboards, optional: per pool (depth, oldest age, capacity and utilisation), per work type (rate, duration, failure ratio, queue wait), and per worker (one row per live instance) |
 | Worker pool `Deployment` per entry in `workerPools` | Optional; teams may manage worker Deployments themselves |
 | KEDA `ScaledObject` per pool | Optional |
 
 ### Database credentials
 
 - The chart does not install PostgreSQL. It takes references to existing Secrets.
-- Two Secrets: a schema-owner credential used only by the migration Job, and an application credential used by the controller and workers. Application pods use a credential that the application team manages.
+- Two database Secrets: a schema-owner credential used only by the migration Job, and an application credential used only by the controller. Application and worker pods receive no database credential; they receive the controller address and the API token.
 - No credential appears in a ConfigMap, a pod spec literal, or a log.
 
 ### Worker pool values
@@ -40,8 +45,9 @@ Install Taskwire on a Kubernetes cluster with one Helm release, run worker pools
 workerPools:
   cpu:
     image: registry.example.com/myapp:1.4.2
-    modules: [myapp.tasks]
-    concurrency: 4
+    command: [python, -m, taskwire, run, myapp.tasks]   # or the application's own entry point that calls serve()
+    mode: process
+    processes: 4
     resources: {requests: {cpu: "4", memory: 4Gi}}
     terminationGracePeriodSeconds: 60
     autoscaling:
@@ -53,9 +59,10 @@ workerPools:
 
 Each pool Deployment sets:
 
-- `TASKWIRE_WORKER_ID` from the pod name through the downward API.
+- `TASKWIRE_INSTANCE_ID` from the pod name through the downward API, and `TASKWIRE_CONTROLLER_URL` and `TASKWIRE_API_TOKEN` for the release.
 - `TASKWIRE_DRAIN_SECONDS` derived from `terminationGracePeriodSeconds` with a safety margin.
-- Liveness and readiness probes on `/livez` and `/readyz`.
+- `TASKWIRE_POOLS` and `TASKWIRE_MODE` from the values above.
+- Liveness and readiness probes on the library's own port under `python -m taskwire run`. For an application that embeds the library, probes are the application's, and the chart leaves them to the user.
 - A rolling-update strategy that adds new pods before removing old ones.
 
 ## Autoscaling
@@ -72,8 +79,14 @@ Each pool Deployment sets:
 | Queue is not draining | Oldest queued age above threshold while depth is non-zero |
 | No workers for a pool with queued work | Depth above zero and workers at zero beyond the scale-up window |
 | Queued work that no worker can run | `taskwire_queue_unserved` above zero beyond a rollout window: a deploy removed the last worker for a task version, or a client is ahead of the workers |
+| Controller API unavailable or overloaded | No ready API replica, or a sustained rate of `overloaded` rejections |
+| Submissions being refused | A sustained rate of `taskwire_submit_limited_total` for a pool or work type: a submitter is over its limit, or the limit is too low for the workers behind it |
+| Sustained back pressure | `taskwire_pressure` above the pacing threshold for a pool beyond the scale-up window: workers are not keeping up and autoscaling has not closed the gap |
+| Backend protection active | Any sustained rate of `taskwire_api_shed_total` |
 | Partition maintenance failing | `taskwire_default_partition_rows` above zero |
 | Workers being lost | Rate of reaped tasks above threshold |
+| A worker is unhealthy | One instance's heartbeat age near the liveness period, or its lost leases or process restarts rising while its pool's are not |
+| A worker is saturated or stuck | One instance at full slots with a longest-running attempt above threshold while its pool has queued work |
 | Startup assertion failing | A worker or controller pod not ready with a failed check |
 | Stuck task | Longest-running attempt above threshold |
 | Tasks exhausting attempts | Rate of `failed` outcomes above threshold |
@@ -85,8 +98,8 @@ Thresholds are chart values with documented defaults.
 ## Upgrade procedure
 
 1. `helm upgrade` runs the migration Job first. Migrations are backward compatible within a minor version (Phase 1).
-2. The controller rolls.
-3. Worker pools and application pods roll on their own schedule; old and new SDK versions run against the same schema during the roll.
+2. The controller rolls, API role first. It accepts the current and the previous protocol revision (Phase 2).
+3. Worker pools and application pods roll on their own schedule; libraries one protocol revision behind keep working during the roll.
 
 ## Required tests
 

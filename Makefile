@@ -1,7 +1,10 @@
-.PHONY: all help sync format lint unit integration packaging test wheel clean db-up db-down
+.PHONY: all help build sync format lint unit integration packaging test wheel clean db-up db-down \
+        go-lint go-unit go-integration py-lint py-unit py-integration
 
 REPO_ROOT := $(shell git rev-parse --show-toplevel 2>/dev/null || pwd)
 UV        ?= uv
+PY_DIR    := $(REPO_ROOT)/clients/python
+PYRUN     := cd $(PY_DIR) && $(UV) run
 
 # Local PostgreSQL for integration tests (see `make db-up`).
 PG_VERSION   ?= 18
@@ -9,39 +12,59 @@ PG_CONTAINER ?= taskwire-test-pg
 PG_PORT      ?= 54329
 PG_PASSWORD  ?= taskwire
 TEST_DB_URL  ?= postgresql://postgres:$(PG_PASSWORD)@localhost:$(PG_PORT)/postgres
-PYTHON    ?= $(UV) run python
 
 all: help
 
 help:
-	@echo "Targets:"
-	@echo "  sync           Create .venv and install all deps from uv.lock"
-	@echo "  format         Format Python code"
-	@echo "  lint           Lint Python code"
-	@echo "  unit           Run unit tests (no database required)"
-	@echo "  db-up          Start a local PostgreSQL container for integration tests"
-	@echo "  db-down        Stop that container"
-	@echo "  integration    Run integration tests against \$$TASKWIRE_TEST_DATABASE_URL (default: the db-up container)"
-	@echo "  packaging      Build the wheel and test it in a clean venv"
-	@echo "  wheel          Build the wheel"
+	@echo "Targets (each runs Go and Python unless noted):"
+	@echo "  build          Build bin/taskwire (Go)"
+	@echo "  sync           Create the Python venv from clients/python/uv.lock"
+	@echo "  format         Format Go and Python code"
+	@echo "  lint           go vet, gofmt check, ruff"
+	@echo "  unit           Unit tests (no database)"
+	@echo "  db-up/db-down  Start/stop a local PostgreSQL container"
+	@echo "  integration    Go tests against \$$TASKWIRE_TEST_DATABASE_URL (default: the db-up container)"
+	@echo "  packaging      Build the Python wheel and test it in a clean venv"
 	@echo "  clean          Remove build artifacts"
+	@echo "  go-lint go-unit go-integration py-lint py-unit py-integration: one side only"
+
+build:
+	cd $(REPO_ROOT) && go build -o bin/taskwire ./cmd/taskwire
 
 sync:
-	cd $(REPO_ROOT) && $(UV) sync --all-extras --locked
+	cd $(PY_DIR) && $(UV) sync --all-extras --locked
 
 format:
-	cd $(REPO_ROOT) && $(PYTHON) -m ruff format python harness
+	cd $(REPO_ROOT) && gofmt -w cmd internal
+	$(PYRUN) ruff format .
 
-lint:
-	cd $(REPO_ROOT) && $(PYTHON) -m ruff check python harness
-	cd $(REPO_ROOT) && $(PYTHON) -m ruff format --check python harness
+lint: go-lint py-lint
+unit: go-unit py-unit
+integration: go-integration py-integration
 
-unit:
-	cd $(REPO_ROOT) && $(PYTHON) -m pytest python/tests/unit -v
+go-lint:
+	cd $(REPO_ROOT) && go vet ./...
+	@cd $(REPO_ROOT) && out="$$(gofmt -l cmd internal)"; [ -z "$$out" ] || { echo "gofmt needed:"; echo "$$out"; exit 1; }
 
-integration:
+go-unit:
+	cd $(REPO_ROOT) && go test ./...
+
+# Tests that need PostgreSQL skip when the variable is unset; TASKWIRE_REQUIRE_INTEGRATION=1
+# makes that a failure. -count=1 so a cached pass is never reported for a database test.
+go-integration:
 	cd $(REPO_ROOT) && TASKWIRE_TEST_DATABASE_URL=$${TASKWIRE_TEST_DATABASE_URL:-$(TEST_DB_URL)} \
-		$(PYTHON) -m pytest python/tests/integration -v -m integration
+		go test -count=1 ./...
+
+py-lint:
+	$(PYRUN) ruff check .
+	$(PYRUN) ruff format --check .
+
+py-unit:
+	$(PYRUN) pytest tests/unit -v
+
+# Python tests against a real controller arrive with the controller (Phase 2).
+py-integration:
+	@echo "no Python integration tests yet (they need the controller, Phase 2)"
 
 # The container is started with --rm, so stopping it also deletes it.
 db-up:
@@ -60,14 +83,13 @@ db-down:
 	-docker stop $(PG_CONTAINER)
 
 packaging:
-	cd $(REPO_ROOT) && $(PYTHON) -m pytest python/tests/integration -v -m packaging
+	$(PYRUN) pytest tests/integration -v -m packaging
 
 test: unit
 
 wheel:
-	cd $(REPO_ROOT) && $(UV) build --wheel
+	cd $(PY_DIR) && $(UV) build --wheel
 
+# Build output only: bin/ and the Python dist/ and build/ directories.
 clean:
-	rm -rf $(REPO_ROOT)/dist $(REPO_ROOT)/build
-	find $(REPO_ROOT) -name "__pycache__" -not -path "*/.venv/*" -exec rm -rf {} + 2>/dev/null; true
-	find $(REPO_ROOT) -name ".pytest_cache" -not -path "*/.venv/*" -exec rm -rf {} + 2>/dev/null; true
+	rm -rf bin clients/python/dist clients/python/build
