@@ -47,7 +47,7 @@ Supported PostgreSQL versions: 14 and later.
 
 ## Status
 
-**Implemented locally; never run in CI on GitHub.** `make lint unit integration packaging` passes locally against PostgreSQL 18; the PostgreSQL 14 leg has not been run.
+**Implemented locally; never run in CI on GitHub.** `make lint unit integration packaging` passes locally against PostgreSQL 18; the PostgreSQL 14 and 18 legs pass locally.
 
 ## Exit gate
 
