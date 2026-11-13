@@ -1,0 +1,20 @@
+# Local development services. `make db-up` starts PostgreSQL from here.
+# The controller joins this file in Phase 2.
+name: taskwire
+
+services:
+  postgres:
+    image: postgres:${PG_VERSION:-18}
+    environment:
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-taskwire}
+    ports:
+      # Loopback only: this server has a known password.
+      - "127.0.0.1:${PG_PORT:-54329}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    # No volume: the data disappears with `make db-down`, so every run starts clean.
+    tmpfs:
+      - /var/lib/postgresql

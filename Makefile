@@ -8,7 +8,6 @@ PYRUN     := cd $(PY_DIR) && $(UV) run
 
 # Local PostgreSQL for integration tests (see `make db-up`).
 PG_VERSION   ?= 18
-PG_CONTAINER ?= taskwire-test-pg
 PG_PORT      ?= 54329
 PG_PASSWORD  ?= taskwire
 TEST_DB_URL  ?= postgresql://postgres:$(PG_PASSWORD)@localhost:$(PG_PORT)/postgres
@@ -66,21 +65,14 @@ py-unit:
 py-integration:
 	@echo "no Python integration tests yet (they need the controller, Phase 2)"
 
-# The container is started with --rm, so stopping it also deletes it.
+# PostgreSQL from docker-compose.yml. Data is in tmpfs, so db-down also deletes it.
 db-up:
-	-@docker stop $(PG_CONTAINER) >/dev/null 2>&1
-	@for i in $$(seq 1 30); do \
-		[ -z "$$(docker ps -aq -f name=^$(PG_CONTAINER)$$)" ] && break; sleep 1; done
-	docker run -d --rm --name $(PG_CONTAINER) -e POSTGRES_PASSWORD=$(PG_PASSWORD) \
-		-p 127.0.0.1:$(PG_PORT):5432 postgres:$(PG_VERSION) >/dev/null
-	@printf 'waiting for PostgreSQL $(PG_VERSION)'
-	@for i in $$(seq 1 60); do \
-		if docker exec $(PG_CONTAINER) pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; then \
-			echo ' ready'; echo 'export TASKWIRE_TEST_DATABASE_URL=$(TEST_DB_URL)'; exit 0; fi; \
-		printf .; sleep 1; done; echo ' timed out'; docker logs $(PG_CONTAINER) | tail -20; exit 1
+	cd $(REPO_ROOT) && PG_VERSION=$(PG_VERSION) PG_PORT=$(PG_PORT) PG_PASSWORD=$(PG_PASSWORD) \
+		docker compose up -d --wait postgres
+	@echo 'export TASKWIRE_TEST_DATABASE_URL=$(TEST_DB_URL)'
 
 db-down:
-	-docker stop $(PG_CONTAINER)
+	cd $(REPO_ROOT) && docker compose down -v
 
 packaging:
 	$(PYRUN) pytest tests/integration -v -m packaging
